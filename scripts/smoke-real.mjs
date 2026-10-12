@@ -40,4 +40,4 @@ label.mjs 当前直接返回 value；package.json 已配置 node --test；AGENTS
 const workflow = new Workflow({ timeoutMs: 300000 });
 const task = await workflow.create({ repo, title: '真实 DSH 冒烟：标签规范化', plan });
 fs.writeFileSync(path.join(destination, 'task-id.json'), JSON.stringify({ id: task.id }, null, 2));
-console.log(JSON.stringify(await workflow.start(task.id), null, 2));
+console.log(JSON.stringify(process.argv.includes('--prepare') ? task : await workflow.start(task.id), null, 2));

@@ -1,0 +1,3 @@
+- insert:
+    - id: gpt-workflow-receiver
+      name: dsh-gpt-receiver

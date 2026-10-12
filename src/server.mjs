@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Workflow } from './workflow.mjs';
 
 const workflow = new Workflow();
-const server = new McpServer({ name: 'dsh-gpt-workflow', version: '0.1.0' });
+const server = new McpServer({ name: 'dsh-gpt-workflow', version: '0.2.0' });
 const id = z.string().uuid().describe('workflow_create 返回的任务 ID');
 function tool(name, description, inputSchema, fn, readOnlyHint = false) {
   server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint, destructiveHint: name === 'workflow_start', openWorldHint: name === 'workflow_start' } }, async args => {

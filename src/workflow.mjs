@@ -4,6 +4,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { receiverRequest } from './receiver-client.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
@@ -121,8 +122,11 @@ export class Workflow {
     const result = this.publicTask(task);
     if (task.status === 'running') {
       result.workerAlive = alive(task.workerPid);
-      result.developerAlive = alive(task.developerPid);
-      if (!result.workerAlive) result.attention = '监督进程已退出；先确认 DSH 子进程状态，再调用 workflow_recover，锁不会自动释放';
+      if (task.backend === 'desktop') {
+        try { result.receiverStatus = (await receiverRequest(`/jobs/${task.receiverKey}`)).status; }
+        catch (error) { result.receiverError = error.message; }
+      } else result.developerAlive = alive(task.developerPid);
+      if (!result.workerAlive) result.attention = '监督进程已退出；通过 workflow_recover 核对 DSH 是否结束，锁不会自动释放';
     }
     return result;
   }
@@ -130,18 +134,25 @@ export class Workflow {
     return Promise.all(fs.readdirSync(path.join(this.home, 'tasks')).filter(id => /^[0-9a-f-]{36}$/.test(id)).map(id => this.status(id)));
   }
   async start(id) {
+    const desktop = !this.command && !process.env.DSH_WORKFLOW_BIN;
+    if (desktop) {
+      const health = await receiverRequest('/health');
+      if (health.protocol !== 1) throw new Error('DSH 接收插件协议不兼容');
+    }
     return this.operation(id, task => {
       if (task.status !== 'planned') throw new Error(`状态 ${task.status} 不能启动开发`);
       const lock = this.lockPath(task.repo);
       if (fs.existsSync(lock)) throw new Error('仓库已被另一个任务锁定，须先完成或恢复该任务');
       if (snapshot(task.repo).fingerprint !== task.baseline.fingerprint) throw new Error('代码基线已变化，请重新分析并创建任务');
       if (hash(fs.readFileSync(task.planPath)) !== task.planHash) throw new Error('实施方案在创建后被修改，请通过修订接口更新');
-      const command = this.command || resolveCommand();
+      const command = desktop ? undefined : this.command || resolveCommand();
       fs.writeFileSync(lock, JSON.stringify({ id, home: this.home, createdAt: now() }), { flag: 'wx', mode: 0o600 });
       let logFd;
       try {
         task.attempt++;
         task.status = 'running'; task.command = command; task.timeoutMs = this.timeoutMs;
+        task.backend = desktop ? 'desktop' : 'headless';
+        task.receiverKey = desktop ? `${task.id}-${task.attempt}` : undefined;
         task.runDir = path.join(this.dir(id), 'runs', String(task.attempt));
         fs.mkdirSync(task.runDir, { recursive: true });
         fs.copyFileSync(task.planPath, path.join(task.runDir, '实施方案.md'));
@@ -169,7 +180,9 @@ export class Workflow {
     return { ...this.publicTask(task), ...evidence, evidencePath, diffPath: path.join(task.runDir, 'changes.diff'), eventsPath: path.join(task.runDir, 'events.jsonl'), stderrPath: path.join(task.runDir, 'stderr.log') };
   }
   async review(id, { verdict, summary, evidenceHash }) {
-    return this.operation(id, task => {
+    const reviewed = this.operation(id, task => {
+      const previous = task.reviews.at(-1);
+      if (task.status === verdict && previous?.evidenceHash === evidenceHash && previous.summary === summary) return this.publicTask(task);
       if (task.status !== 'awaiting_review') throw new Error(`状态 ${task.status} 不能提交审查结论`);
       if (!['approved', 'needs_changes'].includes(verdict) || !summary?.trim()) throw new Error('须提供审查结论与具体依据');
       const evidence = readJson(path.join(task.runDir, 'evidence.json'));
@@ -179,6 +192,19 @@ export class Workflow {
       task.status = verdict; this.save(task); this.release(task);
       return this.publicTask(task);
     });
+    if (reviewed.backend === 'desktop') {
+      const review = reviewed.reviews.at(-1);
+      try {
+        await receiverRequest(`/reviews/${reviewed.receiverKey}`, review);
+        reviewed.reviewDelivery = 'delivered';
+      } catch (error) { reviewed.reviewDelivery = `pending: ${error.message}；重试相同 review 参数可补发`; }
+      this.operation(id, task => {
+        if (task.attempt === reviewed.attempt && task.reviews.at(-1)?.evidenceHash === evidenceHash) {
+          task.reviewDelivery = reviewed.reviewDelivery; this.save(task);
+        }
+      });
+    }
+    return reviewed;
   }
   async revise(id, { plan }) {
     ensurePlan(plan);
@@ -194,6 +220,18 @@ export class Workflow {
     });
   }
   async recover(id) {
+    const initial = this.load(id);
+    if (initial.backend === 'desktop') {
+      if (initial.status !== 'running' || alive(initial.workerPid)) throw new Error('仅恢复监督进程已退出的 running 任务');
+      const result = await receiverRequest(`/jobs/${initial.receiverKey}`);
+      if (!['completed', 'failed'].includes(result.status)) throw new Error(`DSH 会话状态 ${result.status}，不能确认已安全结束，保留锁`);
+      return this.operation(id, task => {
+        if (task.status !== 'running' || task.receiverKey !== initial.receiverKey || alive(task.workerPid)) throw new Error('任务状态已变化');
+        if (result.eventsPath) fs.copyFileSync(result.eventsPath, path.join(task.runDir, 'events.jsonl'));
+        this.finish(task, result);
+        return this.publicTask(task);
+      });
+    }
     return this.operation(id, task => {
       if (task.status !== 'running') throw new Error('仅恢复异常中断的 running 任务');
       if (alive(task.workerPid) || alive(task.developerPid)) throw new Error('监督进程或 DSH 仍在运行，不能释放锁');
@@ -202,10 +240,10 @@ export class Workflow {
       return this.publicTask(task);
     });
   }
-  finish(task, { exitCode, answer, error, sessionId }) {
+  finish(task, { exitCode, answer, error, sessionId, permissionPreset }) {
     const current = snapshot(task.repo);
     if (current.head !== task.baseline.head || current.branch !== task.baseline.branch) error = 'DSH 更改了 Git 提交或分支，需要 GPT 人工核查；' + (error || '');
-    const evidence = { exitCode, answer, error: error || null, sessionId, snapshot: current, changedFiles: current.changedFiles, capturedAt: now() };
+    const evidence = { exitCode, answer, error: error || null, sessionId, permissionPreset, snapshot: current, changedFiles: current.changedFiles, capturedAt: now() };
     evidence.evidenceHash = hash(JSON.stringify(evidence));
     atomicJson(path.join(task.runDir, 'evidence.json'), evidence);
     fs.writeFileSync(path.join(task.runDir, 'changes.diff'), current.diff);

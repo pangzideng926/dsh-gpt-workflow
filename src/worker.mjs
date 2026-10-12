@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { Workflow } from './workflow.mjs';
+import { receiverRequest } from './receiver-client.mjs';
 
 const workflow = new Workflow({ home: process.argv[2] });
 const task = workflow.load(process.argv[3]);
@@ -21,6 +22,25 @@ try {
 
 ${plan}`;
   fs.writeFileSync(path.join(task.runDir, 'prompt.md'), prompt, { mode: 0o600 });
+  if (task.backend === 'desktop') {
+    const request = { id: task.id, attempt: task.attempt, repo: task.repo, title: task.title, prompt, plan, baseline: task.baseline.fingerprint, timeoutMs: task.timeoutMs };
+    // 重试时使用同一轮次和完全相同的内容；接收方负责持久化去重。
+    let result;
+    for (let n = 0; n < 3; n++) {
+      try { result = await receiverRequest('/jobs', request); break; }
+      catch (error) { if (n === 2) throw error; await new Promise(r => setTimeout(r, 1000)); }
+    }
+    task.sessionId = result.sessionId; task.workerPid = process.pid; workflow.save(task);
+    const deadline = Date.now() + task.timeoutMs + 60000;
+    while (!['completed', 'failed'].includes(result.status)) {
+      if (result.status === 'interrupted') throw new Error(result.error);
+      if (Date.now() > deadline) throw new Error('接收插件未确认会话停止，保留仓库锁；稍后调用 recover');
+      await new Promise(r => setTimeout(r, 1500));
+      result = await receiverRequest(`/jobs/${task.receiverKey}`);
+    }
+    if (result.eventsPath) fs.copyFileSync(result.eventsPath, path.join(task.runDir, 'events.jsonl'));
+    workflow.finish(task, result);
+  } else {
   child = spawn(task.command.file, task.command.args, {
     cwd: task.repo, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -60,6 +80,7 @@ ${plan}`;
   else if (code !== 0) error ||= `DSH 退出码 ${code}，信号 ${signal || '无'}；请读取 stderr.log`;
   else if (!finalSeen || !answer.trim()) error ||= 'DSH 缺少非空 final 结果';
   workflow.finish(task, { exitCode: code, answer, error, sessionId });
+  }
 } catch (e) {
   // 无法完成证据采集时保持锁，禁止后续任务接管仍可能活动的进程。
   console.error(e.stack);

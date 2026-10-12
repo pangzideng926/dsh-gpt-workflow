@@ -1,6 +1,6 @@
 {
   "name": "dsh-gpt-workflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "GPT 制定实施方案，DSH 开发，GPT 审查的本地插件",

@@ -1,6 +1,6 @@
 {
   "name": "dsh-gpt-workflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GPT 生成实施文档，DSH 开发，完成后交回 GPT 审查",
   "skills": "./skills/",
   "mcpServers": "./mcp.json",
