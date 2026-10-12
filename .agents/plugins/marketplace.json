@@ -1,0 +1,12 @@
+{
+  "name": "dsh-gpt-local",
+  "owner": { "name": "pangzideng926" },
+  "plugins": [
+    {
+      "name": "dsh-gpt-workflow",
+      "source": "./.runtime/plugin",
+      "version": "0.1.0",
+      "description": "GPT 规划审查，DSH 执行开发"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "dsh-gpt-workflow",
+  "version": "0.1.0",
+  "description": "GPT 生成实施文档，DSH 开发，完成后交回 GPT 审查",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json",
+  "interface": {
+    "displayName": "GPT × DSH 开发协作",
+    "shortDescription": "GPT 规划审查，DSH 执行开发",
+    "defaultPrompt": "请用 GPT 制定实施方案，交给 DSH 开发，完成后由 GPT 审查。"
+  }
+}
