@@ -74,3 +74,18 @@ test('默认工作区仅取当前主面板所属项，不猜测最近工作区',
   assert.equal(currentDshWorkspace({byId:{one:{id:'one',retainedBy:{mainView:1}},two:{id:'two'}}},workspaces).path,'E:/A');
   assert.equal(currentDshWorkspace({byId:{two:{id:'two'}}},workspaces),undefined);
 });
+
+test('仓库脏时在 GPT 最终回复之前提供暂停原因，仍不规划或派发',async()=>{
+  const f=fixture(); fs.writeFileSync(path.join(f.repos[0],'README.md'),'existing change','utf8');
+  let inspected=false;
+  f.requests.plan=async (request,update,inspect)=>{
+    assert.equal(request.stage,'locate');
+    const located={status:'ready',repos:[f.repos[0]],reason:'代码依据'};
+    assert.equal(typeof inspect,'function');
+    assert.throws(()=>inspect(located),/未提交改动/);
+    inspected=true; return located;
+  };
+  const item=await finish(f);
+  assert.equal(inspected,true); assert.match(item.error,/未提交改动/);
+  assert.equal(item.status,'failed'); assert.equal(f.starts.length,0);
+});

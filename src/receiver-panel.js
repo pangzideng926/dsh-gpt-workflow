@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
       const [tab, setTab] = useState('handoff');
       const [copied, setCopied] = useState('');
       useEffect(() => { dialog.current.focus({ preventScroll: true }); }, []);
-      const body = tab === 'handoff' ? renderHandoff(job) : tab === 'plan' ? job.plan || (job.requirement ? `## 用户需求\n${job.requirement}\n\n## 当前状态\n${job.error || labels[status(job)]}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || (job.source && job.key.startsWith('request:') ? '这是关联任务总览，请返回任务列表打开对应开发轮次查看审查证据。' : '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。');
+      const body = tab === 'handoff' ? renderHandoff(job) : tab === 'plan' ? job.plan || (job.requirement ? `## 当前状态\n${job.error || labels[status(job)]}\n\n${job.scopeReason ? `## 仓库定位依据\n${job.scopeReason}\n\n` : ''}## 用户需求\n${job.requirement}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || (job.source && job.key.startsWith('request:') ? '这是关联任务总览，请返回任务列表打开对应开发轮次查看审查证据。' : '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。');
       const renderedBody = useMemo(() => renderMarkdown(body), [body]);
       const current = status(job);
       return h('section', { ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': false, className: 'gwr-panel gwr-modal', 'aria-label': `任务详情：${job.title}`, onKeyDown: e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } } },

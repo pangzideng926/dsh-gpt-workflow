@@ -110,7 +110,25 @@ export class QuickRequests {
     const update = info => { Object.assign(item, info); this.save(item); };
     const work = Promise.resolve().then(async()=>{
       try {
-        const located = await this.plan(item, update);
+        const checkAvailable = repo => {
+          if (this.list().some(j=>j.id!==item.id && ['planning','dispatching','interrupted'].includes(j.status) && (j.repo===repo || j.repos?.includes(repo)))) throw new Error(`该仓库已有规划或待核查请求：${repo}`);
+          if (fs.existsSync(this.workflow.lockPath(repo))) throw new Error(`该仓库已有开发/审查任务：${repo}`);
+        };
+        let scopeError;
+        const inspectScope = located => {
+          try {
+            if (!Array.isArray(located.repos) || !located.repos.length || located.repos.length>8) throw new Error('GPT 未返回明确的执行仓库范围（最多 8 个）');
+            const targets=located.repos.map(repo=>resolveTarget(workspace,repo));
+            if (new Set(targets).size!==targets.length) throw new Error('GPT 返回了重复仓库');
+            for (const repo of targets) {
+              checkAvailable(repo);
+              if (snapshot(repo).status) throw new Error(`仓库有未提交改动：${repo}，请先完成原任务或使用干净工作树`);
+            }
+          } catch(error) { scopeError=error; throw error; }
+        };
+        // 先将只读预检查反馈给 GPT，使本回合 Markdown 能说明真实暂停原因。
+        const located = await this.plan(item, update, inspectScope);
+        if (scopeError) throw scopeError;
         if (located?.status === 'needs_input') { item.status='needs_input'; item.error=located.questions || '请补充功能范围，GPT 尚无法定位相关代码'; return; }
         if (located?.status !== 'ready' || !Array.isArray(located.repos) || !located.repos.length || located.repos.length>8) throw new Error('GPT 未返回明确的执行仓库范围（最多 8 个）');
         const repos = located.repos.map(repo=>resolveTarget(workspace,repo));
@@ -118,10 +136,6 @@ export class QuickRequests {
         item.repos=repos; item.stage='plan'; item.repo=repos.length===1 ? repos[0] : workspace; item.scopeReason=located.reason;
         this.save(item);
         const baselines = new Map();
-        const checkAvailable = repo => {
-          if (this.list().some(j=>j.id!==item.id && ['planning','dispatching','interrupted'].includes(j.status) && (j.repo===repo || j.repos?.includes(repo)))) throw new Error(`该仓库已有规划或待核查请求：${repo}`);
-          if (fs.existsSync(this.workflow.lockPath(repo))) throw new Error(`该仓库已有开发/审查任务：${repo}`);
-        };
         for (const repo of repos) {
           checkAvailable(repo); const baseline=snapshot(repo);
           if (baseline.status) throw new Error(`仓库有未提交改动：${repo}，请先完成原任务或使用干净工作树`);

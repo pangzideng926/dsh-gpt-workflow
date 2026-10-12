@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connectCodex } from './codex-rpc.mjs';
+import { planningTool, validatePlanningResult } from './planning-result.mjs';
 
 export function resolveCodex() {
   if (process.env.DSH_WORKFLOW_CODEX_BIN) {
@@ -33,15 +34,11 @@ export function resolveCodex() {
 }
 
 export function createPlanner(home, signal, {connect = connectCodex} = {}) {
-  return async (request, update) => {
+  return async (request, update, inspectResult) => {
     const dir = path.join(home, request.id); fs.mkdirSync(dir, { recursive: true });
     const stage = request.workspace ? request.stage : 'legacy', locating = stage === 'locate';
-    const schema = path.join(dir, `${stage}-schema.json`), output = path.join(dir, `${stage}-result.json`);
-    const text = { type:'string' }, properties = { status:{type:'string',enum:['ready','needs_input']}, title:text, questions:text };
-    if (locating) Object.assign(properties,{repos:{type:'array',items:text},reason:text});
-    else if (request.workspace) properties.tasks={type:'array',items:{type:'object',properties:{repo:text,title:text,plan:text},required:['repo','title','plan'],additionalProperties:false}};
-    else properties.plan=text;
-    fs.writeFileSync(schema, JSON.stringify({type:'object',properties,required:Object.keys(properties),additionalProperties:false}));
+    const output = path.join(dir, `${stage}-result.json`);
+    fs.writeFileSync(path.join(dir, `${stage}-schema.json`), JSON.stringify(planningTool.inputSchema));
     const scope = locating
       ? `工作区：${request.workspace}\n先自动定位此需求实际涉及的 Git 仓库。按需读取工作区规则、导航和相关目录/代码，不全量扫描，不要求用户手动选子仓库。工作区可能是多仓库目录；只有确定真实 Git 根目录后才能在那里运行只读 Git 命令，禁止在仅有 .git/hooks 的 E:/Eworkspace 根目录运行 Git。返回工作区内确实相关的 1～8 个仓库绝对路径 repos，并在 reason 说明代码依据；不要编写实施方案或猜测同名项目。工作区外项目或范围无法确定时返回 needs_input 与具体问题。`
       : request.workspace
@@ -49,40 +46,69 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
         : `目标仓库：${request.repo}`;
     const prompt = `你负责 GPT → DSH 工作流的只读规划阶段。\n${scope}\n先读取适用的 AGENTS.md 及相关代码和规范，基于实际存在的文件规划。不要开发、修改文件、运行有写入副作用的命令、修改权限、Git 收尾、派发子代理或调用 workflow_* 工具；外围程序会保存方案和启动 DSH。\n输出结构化结果。信息足够时 status=ready，title 为简短中文标题。${locating ? '本轮只定位仓库，后续将在同一会话中生成实施方案。' : '每份 plan 为中文 Markdown，必须含五个二级标题：目标与范围、代码依据、实施步骤、验收标准、测试要求；引用实际文件，列出3～5条可验证验收和必要测试，关键逻辑先失败后通过。'}信息不足则 status=needs_input，questions 写需要用户补充的问题，不猜测关键需求。\n用户需求：\n${request.requirement}`;
     const err = fs.openSync(path.join(dir, 'stderr.log'), 'a');
-    let client;
+    let client, threadId, turnId, result, resultFeedback;
+    let started;
+    const turnStarted = new Promise(resolve=>{started=resolve;});
     try {
       const cwd=request.workspace || request.repo;
-      client = await connect(resolveCodex(), {cwd, signal, stderr:err});
+      client = await connect(resolveCodex(), {cwd, signal, stderr:err, onToolCall:async params=>{
+        await turnStarted;
+        if (!turnId || params.threadId !== threadId || params.turnId !== turnId || params.tool !== planningTool.name || params.namespace) throw new Error('拒绝非当前规划回合的工具请求');
+        let parsed;
+        try { parsed=validatePlanningResult(params.arguments,stage); }
+        catch(error) { return {success:false,contentItems:[{type:'inputText',text:`结果未接收，请修正后再提交：${error.message}`}]}; }
+        if (result && JSON.stringify(result)!==JSON.stringify(parsed)) throw new Error('同一回合提交了冲突的规划结果，已停止派发');
+        if (result) return {success:true,contentItems:[{type:'inputText',text:resultFeedback}]};
+        let preflight='';
+        if (!result && parsed.status==='ready' && inspectResult) {
+          try { inspectResult(parsed); }
+          catch(error) { preflight=`\n外围预检查未通过，本次已暂停、不会派发 DSH：${error.message}。请在最终回复显著说明原因；不要修改仓库、申请权限或改写已提交结果来绕过检查。`; }
+        }
+        result=parsed;
+        const feedback=result.status==='needs_input'
+          ? '已接收待补充问题；不会派发 DSH。请在最终 Markdown 回复中逐项列出问题。'
+          : locating ? '仓库定位结果已接收。尚未生成方案或派发 DSH；接下来外围程序将检查仓库是否干净、是否被占用，通过后才进入实施方案阶段。请在最终 Markdown 中说明这一步，暂停原因可在 DSH 面板任务详情查看。'
+          : '实施方案已接收。请在最终 Markdown 中展示方案，并说明仍待外围程序校验代码基线后派发；当前不能声称 DSH 已开始。';
+        resultFeedback=preflight || feedback;
+        return {success:true,contentItems:[{type:'inputText',text:resultFeedback}]};
+      }});
       const {thread} = request.gptThreadId
         ? await client.request('thread/resume',{threadId:request.gptThreadId,cwd,sandbox:'read-only',approvalPolicy:'never',excludeTurns:true})
-        : await client.request('thread/start', {cwd,sandbox:'read-only',approvalPolicy:'never',ephemeral:false,threadSource:'user'});
+        : await client.request('thread/start', {cwd,sandbox:'read-only',approvalPolicy:'never',ephemeral:false,threadSource:'user',dynamicTools:[planningTool]});
+      threadId=thread.id;
       update({gptThreadId:thread.id});
       await client.request('thread/name/set', {threadId:thread.id,name:`GPT 协作 · ${(request.title || request.requirement.split('\n')[0]).slice(0,40)}`});
       let answer = '';
       const done = new Promise((resolve,reject) => {
         client.once('failure',reject);
-        client.on('notification', event => {
-          if (event.params?.threadId !== thread.id) return;
-          if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage') {
-            answer = event.params.item.text;
-            fs.appendFileSync(path.join(dir,'events.jsonl'), JSON.stringify(event)+'\n');
-          }
-          if (event.method === 'turn/completed') {
-            const turn = event.params.turn;
-            turn.status === 'completed' ? resolve() : reject(new Error(turn.error?.message || `GPT 规划未完成：${turn.status}`));
-          }
+        client.on('notification', async event => {
+          try {
+            await turnStarted;
+            if (!turnId || event.params?.threadId !== thread.id || (event.params.turnId || event.params.turn?.id) !== turnId) return;
+            if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage' && (!event.params.item.phase || event.params.item.phase === 'final_answer')) {
+              answer = event.params.item.text;
+              fs.appendFileSync(path.join(dir,'events.jsonl'), JSON.stringify(event)+'\n');
+            }
+            if (event.method === 'turn/completed') {
+              const turn = event.params.turn;
+              turn.status === 'completed' ? resolve() : reject(new Error(turn.error?.message || `GPT 规划未完成：${turn.status}`));
+            }
+          } catch(error) { reject(error); }
         });
       });
       // 提前挂接拒绝处理，避免 turn/start 失败与退出事件竞争产生未处理拒绝。
       done.catch(()=>{});
       const handoffGuidance = locating ? '' : '\n交接要求：代码依据列出精简的实际文件/规范引用及读取用途，注明开发/审查适用，不复制大段上下文；验收标准用稳定编号 A1、A2…，每条给出观察方法和期望结果；实施步骤注明依赖与停止交回 GPT 的条件；测试要求写工作目录、具体命令、环境前提，区分已验证事实和待验证假设。只维护这一份方案，不要求 Trellis 初始化、任务目录或额外三份文档。';
-      await client.request('turn/start',{threadId:thread.id,input:[{type:'text',text:prompt + handoffGuidance}],outputSchema:JSON.parse(fs.readFileSync(schema,'utf8'))});
+      const presentation = `\n本轮 stage=${stage}。先调用 submit_planning_result 提交结构化结果，不使用的字符串填空、数组填 []。不要把 JSON 放入最终回复；最终回复必须使用中文 Markdown，显示标题、仓库/代码依据、实施方案或需要补充的问题。明确当前阶段和下一步，不得声称已启动 DSH 或完成审查；派发前须由外围程序检查仓库基线和锁，暂停原因以 DSH 面板任务详情为准。`;
+      const {turn}=await client.request('turn/start',{threadId:thread.id,input:[{type:'text',text:prompt + handoffGuidance + presentation}]});
+      turnId=turn.id; started();
       await done;
       if (!answer || Buffer.byteLength(answer)>300000) throw new Error('GPT 规划结果为空或过大');
-      const result = JSON.parse(answer);
+      fs.writeFileSync(path.join(dir, `${stage}-answer.md`),answer);
+      if (!result) throw new Error('GPT 未提交结构化规划结果，未派发 DSH；请查看 GPT 会话');
       fs.writeFileSync(output,JSON.stringify(result,null,2));
       await client.request('thread/name/set',{threadId:thread.id,name:`GPT 协作 · ${result.title || request.title || '待补充需求'}`});
       return result;
-    } finally { client?.close(); fs.closeSync(err); }
+    } finally { started(); client?.close(); fs.closeSync(err); }
   };
 }

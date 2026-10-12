@@ -4,13 +4,22 @@ import { EventEmitter } from 'node:events';
 
 // 独立 stdio 客户端只管理自己启动的进程，不接管桌面进程或修改会话数据库。
 export class CodexRpc extends EventEmitter {
-  constructor(bin, {signal, stderr = 'ignore', cwd, timeoutMs = 600000} = {}) {
+  constructor(bin, {signal, stderr = 'ignore', cwd, timeoutMs = 600000, onToolCall, spawnProcess = spawn} = {}) {
     super(); this.pending = new Map(); this.seq = 0;
-    this.child = spawn(bin, ['app-server', '--listen', 'stdio://'], {cwd, windowsHide:true, shell:false, stdio:['pipe','pipe',stderr]});
+    this.child = spawnProcess(bin, ['app-server', '--listen', 'stdio://'], {cwd, windowsHide:true, shell:false, stdio:['pipe','pipe',stderr]});
     this.lines = createInterface({input:this.child.stdout});
     this.lines.on('line', line => {
       let message; try { message = JSON.parse(line); } catch { return; }
       if (message.method && message.id != null) {
+        if (message.method === 'item/tool/call' && onToolCall) {
+          Promise.resolve().then(()=>onToolCall(message.params)).then(result=>{
+            if (!this.closed) this.child.stdin.write(JSON.stringify({id:message.id,result})+'\n');
+          }).catch(error=>{
+            if (!this.closed) this.child.stdin.write(JSON.stringify({id:message.id,error:{code:-32602,message:error.message}})+'\n');
+            this.fail(error);
+          });
+          return;
+        }
         // 不替用户批准权限，不让无人值守的规划停在隐藏确认框。
         this.child.stdin.write(JSON.stringify({id:message.id,error:{code:-32601,message:'只读规划端不支持交互请求，请回 Codex 处理'}})+'\n');
         this.fail(new Error('规划需要交互，请打开 GPT 会话处理')); return;
