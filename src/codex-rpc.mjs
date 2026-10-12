@@ -4,8 +4,8 @@ import { EventEmitter } from 'node:events';
 
 // 独立 stdio 客户端只管理自己启动的进程，不接管桌面进程或修改会话数据库。
 export class CodexRpc extends EventEmitter {
-  constructor(bin, {signal, stderr = 'ignore', cwd, timeoutMs = 600000, onToolCall, spawnProcess = spawn} = {}) {
-    super(); this.pending = new Map(); this.seq = 0;
+  constructor(bin, {signal, stderr = 'ignore', cwd, timeoutMs = 600000, closeTimeoutMs = 5000, onToolCall, spawnProcess = spawn} = {}) {
+    super(); this.pending = new Map(); this.seq = 0; this.closeTimeoutMs=closeTimeoutMs;
     this.child = spawnProcess(bin, ['app-server', '--listen', 'stdio://'], {cwd, windowsHide:true, shell:false, stdio:['pipe','pipe',stderr]});
     this.lines = createInterface({input:this.child.stdout});
     this.lines.on('line', line => {
@@ -31,7 +31,7 @@ export class CodexRpc extends EventEmitter {
       } else this.emit('notification', message);
     });
     this.child.on('error', error => this.fail(error));
-    this.child.on('close', code => { if (!this.closed) this.fail(new Error(`Codex 会话服务退出（${code}）`)); });
+    this.child.on('close', code => { this.exited=true; if (!this.closed) this.fail(new Error(`Codex 会话服务退出（${code}）`)); });
     this.child.stdin.on('error', error => { if (!this.closed) this.fail(error); });
     this.abort = () => this.fail(new Error('GPT 规划被取消'));
     this.signal = signal; signal?.addEventListener('abort', this.abort, {once:true});
@@ -54,11 +54,24 @@ export class CodexRpc extends EventEmitter {
     });
   }
   close() {
-    if (this.closed) return; this.closed=true; clearTimeout(this.deadline);
+    if (this.closing) return this.closing;
+    this.closed=true; clearTimeout(this.deadline);
     this.signal?.removeEventListener('abort',this.abort);
     for (const p of this.pending.values()) {clearTimeout(p.timer);p.reject(new Error('Codex 会话服务已关闭'));}
-    this.pending.clear(); this.lines.close(); this.child.stdin.end();
-    const timer=setTimeout(()=>this.child.kill(),2000); timer.unref(); this.child.once('close',()=>clearTimeout(timer));
+    this.pending.clear(); this.lines.close();
+    // stdin.end 仅发出关闭请求；必须等自己的进程退出，才能把会话交回桌面。
+    this.closing=new Promise((resolve,reject)=>{
+      if (this.exited) {resolve();return;}
+      const killTimer=setTimeout(()=>{
+        try {this.child.kill();} catch { /* 超时后报告释放失败，不假装已释放。 */ }
+      },Math.min(2000,this.closeTimeoutMs / 2));
+      const deadline=setTimeout(()=>{clearTimeout(killTimer);reject(new Error('GPT 规划进程未退出，会话可能仍被占用；请先结束原规划进程再重试'));},this.closeTimeoutMs);
+      this.child.once('close',()=>{clearTimeout(killTimer);clearTimeout(deadline);resolve();});
+      this.child.stdin.end();
+    });
+    // fail/abort 路径可能无人等待；规划调用方仍须 await 并检查释放结果。
+    this.closing.catch(()=>{});
+    return this.closing;
   }
 }
 
@@ -68,5 +81,5 @@ export async function connectCodex(bin, options) {
     await client.request('initialize',{clientInfo:{name:'dsh_gpt_workflow',title:'GPT × DSH 工作流',version:'0.2.0'},capabilities:{experimentalApi:true}});
     client.child.stdin.write(JSON.stringify({method:'initialized'})+'\n');
     return client;
-  } catch(error) {client.close();throw error;}
+  } catch(error) {await client.close();throw error;}
 }

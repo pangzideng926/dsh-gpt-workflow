@@ -54,3 +54,18 @@ test('打开 GPT 仅接受已关联任务，不接受任意会话或外部 URI',
     assert.throws(()=>codexThreadUrl("'; calc; '"),/ID 无效/);
   } finally {await new Promise(r=>server.close(r));}
 });
+
+test('规划占用期间不打开 GPT 会话，结束后恢复入口',async()=>{
+  const thread='01a12e5a-ed9f-79e0-a1e1-5021be4aa6f3',opened=[];
+  const item={key:'request:busy',taskId:'task',gptThreadId:thread,status:'planning'};
+  const requests={list:()=>[item]};
+  const server=http.createServer(panelHandler({list:()=>[]},requests,{openThread:async id=>opened.push(id)}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const send=key=>fetch(`http://127.0.0.1:${server.address().port}/gpt-workflow-view/open-gpt`,{method:'POST',headers:{'Content-Type':'application/json','X-GPT-Workflow-View':'1'},body:JSON.stringify({key})});
+  try {
+    const response=await send('task-1');assert.equal(response.status,409);
+    assert.match((await response.json()).error,/规划.*占用/);assert.equal(opened.length,0);
+    item.status='failed';item.gptSessionState='release_failed';assert.equal((await send(item.key)).status,409);
+    item.gptSessionState='released';assert.equal((await send(item.key)).status,200);assert.deepEqual(opened,[thread]);
+  }finally {await new Promise(resolve=>server.close(resolve));}
+});

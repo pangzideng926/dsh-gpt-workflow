@@ -47,6 +47,8 @@ test('规划使用可见持久会话，在推理前保存 ID，并保留只读�
   assert.match(fs.readFileSync(path.join(home,'request','legacy-answer.md'),'utf8'),/^# 示例/);
   assert.equal(client.calls.at(-1).method,'thread/name/set');
   assert.equal(client.closed,true);
+  assert.equal(updates.at(-1).gptSessionState,'released');
+  assert.ok(updates.some(update=>update.gptProgress));
 });
 test('模型失败保留会话并停止派发，不能把部分回复当作成功方案', async () => {
   const client = new Client(); client.fail = true;
@@ -108,4 +110,23 @@ test('相同结果重试不重复检查且保留暂停反馈',async()=>{
   const client=new Client(),home=fs.mkdtempSync(path.join(os.tmpdir(),'gpt-repeat-result-'));client.repeatTool=true;let checks=0;
   await createPlanner(home,undefined,{connect:async(_bin,options)=>{client.options=options;return client;}})({id:'request',repo:home,requirement:'示例'},()=>{},()=>{checks++;throw new Error('仓库已占用');});
   assert.equal(checks,1);assert.deepEqual(client.repeatReply,client.toolReply);assert.match(client.repeatReply.contentItems[0].text,/仓库已占用/);
+});
+
+test('规划进程尚未退出时不能提前完成交接',async()=>{
+  const client=new Client(),home=fs.mkdtempSync(path.join(os.tmpdir(),'gpt-release-'));
+  let release, closing;const beganClose=new Promise(resolve=>{closing=resolve;});
+  client.close=()=>{closing();return new Promise(resolve=>{release=resolve;});};
+  const pending=createPlanner(home,undefined,{connect:async(_bin,options)=>{client.options=options;return client;}})({id:'request',repo:home,requirement:'示例'},()=>{});
+  let settled=false;pending.then(()=>{settled=true;});
+  await beganClose;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(settled,false,'必须等到自己的 App Server 退出后再交接');
+  release();await pending;
+});
+
+
+test('释放失败不能当作可交接成功，并留下占用状态',async()=>{
+  const client=new Client(),home=fs.mkdtempSync(path.join(os.tmpdir(),'gpt-release-failed-')),updates=[];
+  client.close=async()=>{throw new Error('规划进程未退出');};
+  await assert.rejects(createPlanner(home,undefined,{connect:async(_bin,options)=>{client.options=options;return client;}})({id:'request',repo:home,requirement:'示例'},update=>updates.push(update)),/进程未退出/);
+  assert.equal(updates.at(-1).gptSessionState,'release_failed');
 });

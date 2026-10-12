@@ -37,6 +37,7 @@ export function panelHandler(store, requests, {openThread = openCodexThread, lis
         const {key} = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         const request = requests.list().find(r => key === r.key || ownsJob(r,key));
         if (!request?.gptThreadId) return reply(404, {error:'该任务尚无 GPT 会话，请等待规划开始'});
+        if (request.status === 'planning' || request.gptSessionState === 'release_failed') return reply(409, {error:'GPT 规划进程仍占用此会话，请先在 DSH 面板查看进展，待规划结束并释放后再打开。'});
         await openThread(request.gptThreadId);
         return reply(200, {opened:true});
       }

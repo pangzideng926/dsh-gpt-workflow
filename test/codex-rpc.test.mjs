@@ -4,13 +4,13 @@ import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { CodexRpc } from '../src/codex-rpc.mjs';
 
-function fixture(onToolCall) {
+function fixture(onToolCall, options={}) {
   const child=new EventEmitter(); child.stdin=new PassThrough();child.stdout=new PassThrough(); child.kill=()=>child.emit('close',0);
   const replies=[];child.stdin.on('data',buf=>replies.push(JSON.parse(buf.toString())));
-  const client=new CodexRpc('unused',{spawnProcess:()=>child,onToolCall});
+  const client=new CodexRpc('unused',{spawnProcess:()=>child,onToolCall,...options});
   const send=data=>child.stdout.write(JSON.stringify(data)+'\n');
   const finish=()=>{client.close();child.emit('close',0);child.stdout.end();};
-  return {client,replies,send,finish};
+  return {client,child,replies,send,finish};
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('仅动态工具请求交给规划处理器，并返回原始请求 ID',async()=>{
@@ -35,4 +35,21 @@ test('工具处理器异常导致失败，不伪造成功响应',async()=>{
     f.send({id:43,method:'item/tool/call',params:{}});await tick();
     assert.match(f.client.failure.message,/回合不匹配/);assert.equal(f.replies[0].error.code,-32602);
   }finally {f.finish();}
+});
+
+test('关闭等待子进程退出，重复关闭复用同一结果',async()=>{
+  const f=fixture();
+  try {
+    const closed=f.client.close();assert.equal(typeof closed?.then,'function');
+    assert.equal(f.client.close(),closed);
+    let settled=false;closed.then(()=>{settled=true;});await tick();assert.equal(settled,false);
+    f.finish();await closed;assert.equal(settled,true);
+  }finally {f.finish();}
+});
+
+
+test('自己的进程不能退出时报告释放失败，不假装已释放',async()=>{
+  const f=fixture(undefined,{closeTimeoutMs:30});f.child.kill=()=>false;
+  try {await assert.rejects(f.client.close(),/进程未退出/);}
+  finally {f.finish();}
 });

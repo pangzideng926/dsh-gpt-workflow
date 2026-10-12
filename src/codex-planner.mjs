@@ -76,7 +76,7 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
         ? await client.request('thread/resume',{threadId:request.gptThreadId,cwd,sandbox:'read-only',approvalPolicy:'never',excludeTurns:true})
         : await client.request('thread/start', {cwd,sandbox:'read-only',approvalPolicy:'never',ephemeral:false,threadSource:'user',dynamicTools:[planningTool]});
       threadId=thread.id;
-      update({gptThreadId:thread.id});
+      update({gptThreadId:thread.id,gptSessionState:'owned',gptProgress:locating ? '正在定位相关仓库…' : '正在生成实施方案…'});
       await client.request('thread/name/set', {threadId:thread.id,name:`GPT 协作 · ${(request.title || request.requirement.split('\n')[0]).slice(0,40)}`});
       let answer = '';
       const done = new Promise((resolve,reject) => {
@@ -85,6 +85,7 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
           try {
             await turnStarted;
             if (!turnId || event.params?.threadId !== thread.id || (event.params.turnId || event.params.turn?.id) !== turnId) return;
+            if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage' && event.params.item.phase === 'commentary') update({gptProgress:event.params.item.text.slice(0,4000)});
             if (event.method === 'item/completed' && event.params.item?.type === 'agentMessage' && (!event.params.item.phase || event.params.item.phase === 'final_answer')) {
               answer = event.params.item.text;
               fs.appendFileSync(path.join(dir,'events.jsonl'), JSON.stringify(event)+'\n');
@@ -109,6 +110,15 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
       fs.writeFileSync(output,JSON.stringify(result,null,2));
       await client.request('thread/name/set',{threadId:thread.id,name:`GPT 协作 · ${result.title || request.title || '待补充需求'}`});
       return result;
-    } finally { started(); client?.close(); fs.closeSync(err); }
+    } finally {
+      started();
+      try {
+        await client?.close();
+        if (threadId) update({gptSessionState:'released'});
+      } catch(error) {
+        if (threadId) update({gptSessionState:'release_failed'});
+        throw error;
+      } finally { fs.closeSync(err); }
+    }
   };
 }
