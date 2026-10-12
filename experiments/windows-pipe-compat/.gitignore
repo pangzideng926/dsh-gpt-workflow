@@ -1,0 +1,4 @@
+.artifacts/
+*.node
+*.exe
+node_modules/

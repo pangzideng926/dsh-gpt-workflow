@@ -1,0 +1,7 @@
+{
+  "name": "dsh-restricted-pipe-compat-experiment",
+  "version": "0.0.1",
+  "private": true,
+  "description": "DSH Windows 受限命名管道兼容性独立实验",
+  "scripts": { "test": "node test/run-matrix.cjs" }
+}
