@@ -46,6 +46,17 @@ window.__ModuleLoader__.load({
       const [workspaceReady, setWorkspaceReady] = useState(false);
       const [creating, setCreating] = useState(false), [workspace, setWorkspace] = useState(''), [requirement, setRequirement] = useState(''), [submitting, setSubmitting] = useState(false), [formError, setFormError] = useState(''), [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [loading, setLoading] = useState(true);
       const submission = useRef(null), busySubmit = useRef(false);
+      // 同页工作台一次只展开一个；收起只隐藏界面，保留需求草稿与选中任务。
+      useEffect(() => {
+        const onWorkbenchOpen = event => {
+          if (event.detail?.id === 'zentao-workbench') setOpen(false);
+        };
+        document.addEventListener('dsh-workbench:open', onWorkbenchOpen);
+        return () => document.removeEventListener('dsh-workbench:open', onWorkbenchOpen);
+      }, []);
+      useEffect(() => {
+        if (open) document.dispatchEvent(new CustomEvent('dsh-workbench:open', { detail: { id: 'gpt-workflow-receiver' } }));
+      }, [open]);
       const submit = async e => {
         e.preventDefault(); if (busySubmit.current) return;
         if (!workspaceReady) { setFormError('请在任务空闲时完整重启 DSH，以加载自动识别工作区的新接口'); return; }
