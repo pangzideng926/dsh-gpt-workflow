@@ -1,11 +1,13 @@
 import { openCodexThread } from './codex-open.mjs';
+import { listWorkspaceProjects } from './workspace-projects.mjs';
 
-export function panelHandler(store, requests, {openThread = openCodexThread} = {}) {
+export function panelHandler(store, requests, {openThread = openCodexThread, listProjects = listWorkspaceProjects} = {}) {
   return async (req, res) => {
     const reply = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
     const origin = req.headers.origin;
     if (req.method !== 'POST' || req.headers['x-gpt-workflow-view'] !== '1' || (origin && !['dsh-app://app', `http://${req.headers.host}`, `https://${req.headers.host}`].includes(origin))) return reply(403, { error: '未授权' });
     try {
+      if (req.url === '/gpt-workflow-view/projects') return reply(200, await listProjects());
       if (req.url === '/gpt-workflow-view/open-gpt') {
         const chunks = []; let size = 0;
         for await (const chunk of req) { size += chunk.length; if (size > 1024) return reply(413, {error:'请求过长'}); chunks.push(chunk); }
