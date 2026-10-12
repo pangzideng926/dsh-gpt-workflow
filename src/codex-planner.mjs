@@ -35,14 +35,27 @@ export function resolveCodex() {
 export function createPlanner(home, signal, {connect = connectCodex} = {}) {
   return async (request, update) => {
     const dir = path.join(home, request.id); fs.mkdirSync(dir, { recursive: true });
-    const schema = path.join(dir, 'schema.json'), output = path.join(dir, 'result.json');
-    fs.writeFileSync(schema, JSON.stringify({ type: 'object', properties: { status: { type: 'string', enum: ['ready', 'needs_input'] }, title: { type: 'string' }, plan: { type: 'string' }, questions: { type: 'string' } }, required: ['status', 'title', 'plan', 'questions'], additionalProperties: false }));
-    const prompt = `你负责 GPT → DSH 工作流的只读规划阶段。用户要求生成实施方案并交 DSH 开发。\n目标仓库：${request.repo}\n先读取适用的 AGENTS.md 及相关代码和规范，基于实际存在的文件规划。不要开发、修改文件、运行有写入副作用的命令、Git 收尾、派发子代理或调用 workflow_* 工具；外围程序会保存方案和启动 DSH。\n输出结构化结果。信息足够时 status=ready，title 为简短中文标题，plan 为中文 Markdown，必须含五个二级标题：目标与范围、代码依据、实施步骤、验收标准、测试要求；引用实际文件，列出3～5条可验证验收和必要测试，关键逻辑先失败后通过。信息不足则 status=needs_input，questions 写需要用户补充的问题，不猜测关键需求。\n用户需求：\n${request.requirement}`;
+    const stage = request.workspace ? request.stage : 'legacy', locating = stage === 'locate';
+    const schema = path.join(dir, `${stage}-schema.json`), output = path.join(dir, `${stage}-result.json`);
+    const text = { type:'string' }, properties = { status:{type:'string',enum:['ready','needs_input']}, title:text, questions:text };
+    if (locating) Object.assign(properties,{repos:{type:'array',items:text},reason:text});
+    else if (request.workspace) properties.tasks={type:'array',items:{type:'object',properties:{repo:text,title:text,plan:text},required:['repo','title','plan'],additionalProperties:false}};
+    else properties.plan=text;
+    fs.writeFileSync(schema, JSON.stringify({type:'object',properties,required:Object.keys(properties),additionalProperties:false}));
+    const scope = locating
+      ? `工作区：${request.workspace}\n先自动定位此需求实际涉及的 Git 仓库。按需读取工作区规则、导航和相关目录/代码，不全量扫描，不要求用户手动选子仓库。工作区可能是多仓库目录；只有确定真实 Git 根目录后才能在那里运行只读 Git 命令，禁止在仅有 .git/hooks 的 E:/Eworkspace 根目录运行 Git。返回工作区内确实相关的 1～8 个仓库绝对路径 repos，并在 reason 说明代码依据；不要编写实施方案或猜测同名项目。工作区外项目或范围无法确定时返回 needs_input 与具体问题。`
+      : request.workspace
+        ? `工作区：${request.workspace}\n已确认执行仓库：${JSON.stringify(request.repos)}\n这些仓库的基线已冻结，请只读核对代码并返回 tasks 数组，每个仓库一份 {repo,title,plan}；必须覆盖且仅覆盖上述仓库，不得扩大范围。跨仓库依赖在各方案中说明；DSH 会分别开发并分别交回 GPT 审查。`
+        : `目标仓库：${request.repo}`;
+    const prompt = `你负责 GPT → DSH 工作流的只读规划阶段。\n${scope}\n先读取适用的 AGENTS.md 及相关代码和规范，基于实际存在的文件规划。不要开发、修改文件、运行有写入副作用的命令、修改权限、Git 收尾、派发子代理或调用 workflow_* 工具；外围程序会保存方案和启动 DSH。\n输出结构化结果。信息足够时 status=ready，title 为简短中文标题。${locating ? '本轮只定位仓库，后续将在同一会话中生成实施方案。' : '每份 plan 为中文 Markdown，必须含五个二级标题：目标与范围、代码依据、实施步骤、验收标准、测试要求；引用实际文件，列出3～5条可验证验收和必要测试，关键逻辑先失败后通过。'}信息不足则 status=needs_input，questions 写需要用户补充的问题，不猜测关键需求。\n用户需求：\n${request.requirement}`;
     const err = fs.openSync(path.join(dir, 'stderr.log'), 'a');
     let client;
     try {
-      client = await connect(resolveCodex(), {cwd:request.repo, signal, stderr:err});
-      const {thread} = await client.request('thread/start', {cwd:request.repo, sandbox:'read-only', approvalPolicy:'never', ephemeral:false, threadSource:'user'});
+      const cwd=request.workspace || request.repo;
+      client = await connect(resolveCodex(), {cwd, signal, stderr:err});
+      const {thread} = request.gptThreadId
+        ? await client.request('thread/resume',{threadId:request.gptThreadId,cwd,sandbox:'read-only',approvalPolicy:'never',excludeTurns:true})
+        : await client.request('thread/start', {cwd,sandbox:'read-only',approvalPolicy:'never',ephemeral:false,threadSource:'user'});
       update({gptThreadId:thread.id});
       await client.request('thread/name/set', {threadId:thread.id,name:`GPT 协作 · ${(request.title || request.requirement.split('\n')[0]).slice(0,40)}`});
       let answer = '';

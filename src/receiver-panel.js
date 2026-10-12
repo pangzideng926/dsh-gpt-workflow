@@ -1,4 +1,5 @@
 import { renderMarkdown } from './receiver-markdown.mjs';
+import { createWorkspacePicker } from './receiver-workspace-picker.js';
 
 // DSH 客户端模块入口：由宿主提供 React 和原生会话导航。
 window.__ModuleLoader__.load({
@@ -37,55 +38,18 @@ window.__ModuleLoader__.load({
         h('footer', null, '仅由 GPT 提交审查结论'),
       );
     }
-    function ProjectPicker({ repo, onChange, disabled }) {
-      const [catalog, setCatalog] = useState(null), [search, setSearch] = useState(''), [loading, setLoading] = useState(true), [error, setError] = useState(''), [refresh, setRefresh] = useState(0), [manual, setManual] = useState(false), [expanded, setExpanded] = useState(!repo);
-      useEffect(() => {
-        let stopped = false;
-        setLoading(true); setError('');
-        (async () => {
-          try {
-            const response = await fetch('/gpt-workflow-view/projects', { method: 'POST', headers: { 'X-GPT-Workflow-View': '1' }, signal: AbortSignal.timeout(15000) });
-            const data = await response.json();
-            if (response.status === 404) throw new Error('请在任务空闲时重启 DSH，以加载项目选择接口');
-            if (!response.ok || !Array.isArray(data.projects)) throw new Error(data.error || '项目列表加载失败，请重启 DSH 加载新版接收插件');
-            if (!stopped) setCatalog(data);
-          } catch (e) { if (!stopped) setError(e.message); }
-          finally { if (!stopped) setLoading(false); }
-        })();
-        return () => { stopped = true; };
-      }, [refresh]);
-      const projects = (catalog?.projects || []).filter(p => `${p.name} ${p.relativePath} ${p.path}`.toLowerCase().includes(search.trim().toLowerCase()));
-      const chosen = catalog?.projects.find(p => p.path.replaceAll('\\', '/').toLowerCase() === repo.replaceAll('\\', '/').toLowerCase());
-      return h('div', { className: 'gwr-project-picker' },
-        h('div', { className: 'gwr-project-heading' }, h('span', null, '主工作区'), h('span', null, catalog?.root || 'E:/Eworkspace')),
-        h('div', { className: 'gwr-project-selected' },
-          h('div', null, h('strong', null, chosen?.relativePath || (repo ? repo.split(/[\\/]/).at(-1) : '请选择目标项目')), h('small', null, repo || '从主工作区下选择具体 Git 仓库')),
-          h('button', { type: 'button', disabled, onClick: () => setExpanded(!expanded), 'aria-expanded': expanded }, expanded ? '收起' : '更换'),
-        ),
-        expanded && h('div', { className: 'gwr-project-options' },
-          h('div', { className: 'gwr-project-tools' },
-            h('input', { type: 'search', value: search, disabled, 'aria-label': '搜索项目', placeholder: '搜索项目名或路径，如：旧标准', onChange: e => setSearch(e.target.value), onKeyDown: e => { if (e.key === 'Enter') e.preventDefault(); } }),
-            h('button', { type: 'button', disabled: disabled || loading, onClick: () => setRefresh(n => n + 1) }, '刷新'),
-          ),
-          error && h('p', { className: 'gwr-error', role: 'alert' }, error),
-          h('div', { className: 'gwr-project-list', 'aria-label': '可选项目', 'aria-busy': loading },
-            loading ? h('p', { role: 'status' }, '正在读取主工作区…') : projects.length ? projects.map(p => h('button', { key: p.path, type: 'button', disabled, className: 'gwr-project-option', 'aria-pressed': chosen?.path === p.path, onClick: () => { onChange(p.path); setExpanded(false); setManual(false); } }, h('strong', null, p.name), h('small', null, p.relativePath))) : h('p', null, search ? '没有匹配项目，可修改搜索或手动填写路径' : '未找到项目，可刷新或手动填写路径'),
-          ),
-          h('p', { className: 'gwr-project-note' }, `${catalog?.projects.length || 0} 个项目 · 不自动选择临时演示仓库${catalog?.truncated || catalog?.unreadable ? ' · 部分目录未列出，可手动填写' : ''}`),
-          h('button', { type: 'button', disabled, onClick: () => setManual(!manual), 'aria-expanded': manual }, manual ? '收起手动路径' : '手动填写其他仓库路径'),
-          manual && h('label', null, 'Git 仓库完整路径', h('input', { disabled, value: repo, placeholder: '例如 E:/Eworkspace/SJ/旧标准/API', onChange: e => onChange(e.target.value) })),
-        ),
-      );
-    }
+    const WorkspacePicker = createWorkspacePicker({createElement:h,useState,useEffect});
     function Panel({ ctx }) {
       const [open, setOpen] = useState(false), [jobs, setJobs] = useState([]), [selected, select] = useState(''), [error, setError] = useState('');
-      const [creating, setCreating] = useState(false), [repo, setRepo] = useState(''), [requirement, setRequirement] = useState(''), [submitting, setSubmitting] = useState(false), [formError, setFormError] = useState(''), [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [loading, setLoading] = useState(true);
+      const [workspaceReady, setWorkspaceReady] = useState(false);
+      const [creating, setCreating] = useState(false), [workspace, setWorkspace] = useState(''), [requirement, setRequirement] = useState(''), [submitting, setSubmitting] = useState(false), [formError, setFormError] = useState(''), [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [loading, setLoading] = useState(true);
       const submission = useRef(null), busySubmit = useRef(false);
       const submit = async e => {
         e.preventDefault(); if (busySubmit.current) return;
-        if (!repo.trim()) { setFormError('请先选择目标项目'); return; }
+        if (!workspaceReady) { setFormError('请在任务空闲时完整重启 DSH，以加载自动识别工作区的新接口'); return; }
+        if (!workspace.trim()) { setFormError('请先选择工作区'); return; }
         busySubmit.current = true; setSubmitting(true); setFormError('');
-        const payload = { repo: repo.trim(), requirement: requirement.trim() };
+        const payload = { workspace: workspace.trim(), requirement: requirement.trim() };
         const signature = JSON.stringify(payload);
         if (submission.current?.signature !== signature) submission.current = { signature, id: crypto.randomUUID() };
         try {
@@ -105,7 +69,7 @@ window.__ModuleLoader__.load({
             if (!response.ok) throw new Error(`接收插件暂不可用（${response.status}）`);
             const data = await response.json();
             if (!Array.isArray(data.jobs)) throw new Error('任务列表响应无效，请检查接收插件版本');
-            if (!stopped) { setJobs(data.jobs); setError(''); setLoading(false); }
+            if (!stopped) { setJobs(data.jobs); setWorkspaceReady(data.workspaceRequests === true); setError(''); setLoading(false); }
           } catch (e) { if (!stopped) { setError(e.message); setLoading(false); } }
           finally { busy = false; }
         };
@@ -132,7 +96,7 @@ window.__ModuleLoader__.load({
         h('style', null, css),
         h('button', { className: 'gwr-launcher', title: 'GPT 协作工作台', 'aria-label': 'GPT 协作工作台', onClick: () => setOpen(!open) }, 'GPT'),
         open && h('section', { className: 'gwr-panel gwr-compact', 'aria-label': 'GPT 任务与进度' },
-          h('header', null, h('strong', null, 'GPT 任务与进度'), h('div', { className: 'gwr-actions' }, h('button', { className: 'gwr-primary', onClick: () => { select(''); setCreating(true); setFormError(''); } }, '+ 新建'), h('button', { onClick: () => setOpen(false), 'aria-label': '收起 GPT 工作台' }, '×'))),
+          h('header', null, h('strong', null, 'GPT 任务与进度'), h('div', { className: 'gwr-actions' }, h('button', { className: 'gwr-primary', onClick: () => { select(''); setWorkspace(''); setCreating(true); setFormError(''); } }, '+ 新建'), h('button', { onClick: () => setOpen(false), 'aria-label': '收起 GPT 工作台' }, '×'))),
           error && h('p', { className: 'gwr-error', role: 'alert' }, error),
           h('div', { className: 'gwr-toolbar' }, h('input', { type: 'search', placeholder: '搜索任务或仓库', 'aria-label': '搜索任务或仓库', value: query, onChange: e => setQuery(e.target.value) }), h('nav', { className: 'gwr-filters', 'aria-label': '任务筛选' }, [['all','全部'],['active','进行中'],['review','待审查']].map(([key, title]) => h('button', { key, 'aria-pressed': filter === key, onClick: () => setFilter(key) }, title)))),
           !visible.length ? h('div', { className: 'gwr-empty' }, loading ? '正在加载任务…' : jobs.length ? '没有匹配任务' : '点击「新建」填写需求，交给 GPT 规划') : h('div', { className: 'gwr-task-list' }, visible.map(j => h('button', { key: j.key, className: 'gwr-task-card', onClick: () => { setCreating(false); select(j.key); }, 'aria-label': `查看任务：${j.title}，${round(j)}，${labels[status(j)] || status(j)}` },
@@ -141,13 +105,13 @@ window.__ModuleLoader__.load({
             h(Steps, { job: j }),
           ))),
         ),
-        open && job && h(Details, { key: job.key, job, error, onClose: () => select(''), onOpenSession: openSession, onOpenGpt:openGpt, onReuse: () => { setRepo(job.repo); setRequirement(job.requirement); setFormError(''); select(''); setCreating(true); } }),
+        open && job && h(Details, { key: job.key, job, error, onClose: () => select(''), onOpenSession: openSession, onOpenGpt:openGpt, onReuse: () => { setWorkspace(job.workspace || job.repo); setRequirement(job.requirement); setFormError(''); select(''); setCreating(true); } }),
         open && creating && h('section', { className: 'gwr-panel gwr-create', role: 'dialog', 'aria-modal': false, 'aria-label': '新建 GPT 开发任务', onKeyDown: e => { if (e.key === 'Escape' && !submitting) { e.stopPropagation(); setCreating(false); } } },
           h('header', null, h('strong', null, '新建 GPT 开发任务'), h('button', { onClick: () => setCreating(false), 'aria-label': '关闭新建任务' }, '×')),
           h('form', { className: 'gwr-form', onSubmit: submit },
-            h(ProjectPicker, { repo, onChange: setRepo, disabled: submitting }),
+            h(WorkspacePicker, { ctx, value: workspace, onChange: setWorkspace, disabled: submitting }),
             h('label', null, '需求描述', h('textarea', { required: true, disabled: submitting, maxLength: 20000, rows: 7, value: requirement, onChange: e => setRequirement(e.target.value), placeholder: '希望改什么、现在有什么问题、怎样算完成？' })),
-            h('p', { className: 'gwr-hint' }, 'GPT 读取代码生成方案后，自动交给 DSH 开发。需本机 Codex 已登录，目标仓库无未提交改动。'),
+            h('p', { className: 'gwr-hint' }, 'GPT 读取代码生成方案后，自动交给 DSH 开发。需本机 Codex 已登录，自动识别的相关仓库须无未提交改动。'),
             formError && h('p', { className: 'gwr-error', role: 'alert' }, formError),
             h('button', { type: 'submit', className: 'gwr-primary', disabled: submitting }, submitting ? '正在提交…' : '交给 GPT 规划并开发'),
           ),
@@ -170,7 +134,7 @@ window.__ModuleLoader__.load({
 .gwr-root *{box-sizing:border-box}.gwr-root .gwr-modal{top:24px;bottom:90px;height:auto;max-height:820px;outline:none}.gwr-modal::backdrop{background:none}
 .gwr-actions{display:flex;align-items:center;gap:6px}.gwr-panel header .gwr-primary{font-size:12px;padding:7px 10px;border-radius:7px}.gwr-toolbar{padding:12px 12px 0}.gwr-toolbar input,.gwr-form input,.gwr-form textarea{width:100%;border:1px solid #8885;background:var(--gwr-surface);color:var(--gwr-text);border-radius:7px;padding:9px;font:inherit;font-size:13px}.gwr-filters{display:flex;gap:6px;margin-top:8px}.gwr-filters button{flex:1;font-size:12px}.gwr-filters button[aria-pressed=true]{background:#26978120;border-color:#269781}.gwr-task-meta>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.gwr-badge{flex-shrink:0}.gwr-compact .gwr-empty{padding:24px;font-size:13px;line-height:1.7;display:flex;align-items:center;justify-content:center;min-height:0;overflow:auto}
 .gwr-create>header{flex-shrink:0}.gwr-create{position:fixed;inset:24px 0 90px;margin:auto;width:min(620px,calc(100vw - 40px));height:fit-content;max-height:calc(100vh - 114px)}.gwr-form{padding:20px;overflow:auto;font-size:13px}.gwr-form label{display:block;margin-bottom:16px}.gwr-form input,.gwr-form textarea{display:block;margin-top:6px;resize:vertical}.gwr-hint{font-size:12px;line-height:1.7;opacity:.7;margin:12px 0}.gwr-form .gwr-error{margin:10px 0}.gwr-panel button:disabled{opacity:.6;cursor:wait}.gwr-badge.planning,.gwr-badge.dispatching{color:#3976da;background:#3b82f620}
-.gwr-project-picker{margin-bottom:18px}.gwr-project-heading,.gwr-project-selected,.gwr-project-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}.gwr-project-heading{font-size:12px;opacity:.7;margin-bottom:8px;flex-wrap:wrap}.gwr-project-selected{padding:12px;border:1px solid #26978166;border-radius:9px;background:#2697810a}.gwr-project-selected>div{min-width:0}.gwr-project-selected strong{font-size:14px;overflow-wrap:anywhere}.gwr-project-selected small{overflow-wrap:anywhere;line-height:1.5;opacity:.8}.gwr-project-selected>button,.gwr-project-tools>button{flex-shrink:0}.gwr-project-options{padding-top:10px}.gwr-project-tools input{margin:0;min-width:0}.gwr-project-list{max-height:180px;overflow:auto;margin-top:8px;border:1px solid #8883;border-radius:8px;overscroll-behavior:contain}.gwr-project-list>p{padding:10px;color:var(--gwr-text)}.gwr-panel .gwr-project-option{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #8882;border-radius:0;padding:9px 12px}.gwr-project-option:last-child{border-bottom:0}.gwr-project-option:hover,.gwr-project-option[aria-pressed=true]{background:#26978118}.gwr-project-option strong{font-size:13px}.gwr-project-option small{margin-top:3px;overflow-wrap:anywhere;opacity:.75}.gwr-project-note{font-size:11px;opacity:.7;line-height:1.5}.gwr-project-options>label{margin:10px 0 0}.gwr-task-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.gwr-workspace-manual{margin-top:12px}.gwr-project-picker{margin-bottom:18px}.gwr-project-heading,.gwr-project-selected,.gwr-project-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}.gwr-project-heading{font-size:12px;opacity:.7;margin-bottom:8px;flex-wrap:wrap}.gwr-project-selected{margin-top:10px;padding:12px;border:1px solid #26978166;border-radius:9px;background:#2697810a}.gwr-project-selected>div{min-width:0}.gwr-project-selected strong{font-size:14px;overflow-wrap:anywhere}.gwr-project-selected small{overflow-wrap:anywhere;line-height:1.5;opacity:.8}.gwr-project-selected>button,.gwr-project-tools>button{flex-shrink:0}.gwr-project-options{padding-top:10px}.gwr-project-tools input{margin:0;min-width:0}.gwr-project-list{max-height:180px;overflow:auto;margin-top:8px;border:1px solid #8883;border-radius:8px;overscroll-behavior:contain}.gwr-project-list>p{padding:10px;color:var(--gwr-text)}.gwr-panel .gwr-project-option{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #8882;border-radius:0;padding:9px 12px}.gwr-project-option:last-child{border-bottom:0}.gwr-project-option:hover,.gwr-project-option[aria-pressed=true]{background:#26978118}.gwr-project-option strong{font-size:13px}.gwr-project-option small{margin-top:3px;overflow-wrap:anywhere;opacity:.75}.gwr-project-note{font-size:11px;opacity:.7;line-height:1.5}.gwr-project-options>label{margin:10px 0 0}.gwr-task-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .gwr-markdown{white-space:normal;min-width:0;line-height:1.75}
 .gwr-markdown>:first-child{margin-top:0}.gwr-markdown>:last-child{margin-bottom:0}
 .gwr-markdown h1,.gwr-markdown h2,.gwr-markdown h3,.gwr-markdown h4,.gwr-markdown h5,.gwr-markdown h6{font-weight:650;line-height:1.45;margin:18px 0 10px}
@@ -186,7 +150,7 @@ window.__ModuleLoader__.load({
 @media(prefers-color-scheme:dark){.gwr-markdown a{color:#64d8af}}
 @media(prefers-color-scheme:dark){.gwr-root{--gwr-surface:#24272d;--gwr-text:#edf0f5;color-scheme:dark}.gwr-badge{color:#e7b657}.gwr-badge.approved{color:#64d8af}.gwr-badge.running{color:#88b7ff}.gwr-badge.failed,.gwr-badge.interrupted,.gwr-badge.needs_changes,.gwr-error{color:#ff9c9c}}
 `;
-    return { name: 'gpt-workflow-receiver', inject: ['slots', 'sessions'], apply(ctx) {
+    return { name: 'gpt-workflow-receiver', inject: ['slots', 'sessions', 'workspaces'], apply(ctx) {
       ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'gpt-workflow-receiver', order: 21 }, () => h(Panel, { ctx })));
     } };
   },
