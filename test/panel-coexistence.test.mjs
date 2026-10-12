@@ -31,6 +31,12 @@ test('GPT 与禅道展开互斥，保留草稿并清理事件订阅', async () =
   values[0] = true;
   document.dispatchEvent(new CustomEvent('dsh-workbench:open', { detail: { id: 'unrelated-plugin' } }));
   assert.equal(values[0], true);
+  values[0] = false;
+  const requestId='00000000-0000-4000-8000-000000000042';
+  document.dispatchEvent(new CustomEvent('dsh-gpt:show', {detail:{requestId}}));
+  assert.equal(values[0],true);
+  assert.equal(values[2],`request:${requestId}`);
+  assert.equal(values[7],'尚未提交的需求');
   for (const cleanup of cleanups) cleanup();
   document.dispatchEvent(new CustomEvent('dsh-workbench:open', { detail: { id: 'zentao-workbench' } }));
   assert.equal(values[0], true, '卸载必须解除事件订阅');

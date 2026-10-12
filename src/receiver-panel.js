@@ -8,8 +8,9 @@ window.__ModuleLoader__.load({
   factory: require => {
     const { createElement: h, useState, useEffect, useMemo, useRef } = require('react');
     const labels = { planning: 'GPT 规划中', needs_input: '待补充需求', dispatching: '正在派发', dispatched: '已派发 DSH', accepted: '已接收', running: '开发中', completed: '待 GPT 审查', failed: '执行失败', interrupted: '需要核查', approved: '审查通过', needs_changes: '需要返工' };
+    const sourceLabel = source => `禅道${({task:'任务',bug:'Bug',story:'需求'})[source.kind] || ''} #${source.id}`;
     const status = job => job.review?.verdict || job.status;
-    const round = job => job.key.startsWith('request:') ? '新需求' : `第 ${job.key.split('-').at(-1)} 轮`;
+    const round = job => job.key.startsWith('request:') ? (job.source ? '禅道关联' : '新需求') : `第 ${job.key.split('-').at(-1)} 轮`;
     const active = job => ['planning', 'dispatching', 'dispatched', 'accepted', 'running'].includes(status(job));
     function Steps({ job }) {
       const current = status(job);
@@ -20,7 +21,7 @@ window.__ModuleLoader__.load({
       const [tab, setTab] = useState('handoff');
       const [copied, setCopied] = useState('');
       useEffect(() => { dialog.current.focus({ preventScroll: true }); }, []);
-      const body = tab === 'handoff' ? renderHandoff(job) : tab === 'plan' ? job.plan || (job.requirement ? `## 用户需求\n${job.requirement}\n\n## 当前状态\n${job.error || labels[status(job)]}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。';
+      const body = tab === 'handoff' ? renderHandoff(job) : tab === 'plan' ? job.plan || (job.requirement ? `## 用户需求\n${job.requirement}\n\n## 当前状态\n${job.error || labels[status(job)]}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || (job.source && job.key.startsWith('request:') ? '这是关联任务总览，请返回任务列表打开对应开发轮次查看审查证据。' : '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。');
       const renderedBody = useMemo(() => renderMarkdown(body), [body]);
       const current = status(job);
       return h('section', { ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': false, className: 'gwr-panel gwr-modal', 'aria-label': `任务详情：${job.title}`, onKeyDown: e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } } },
@@ -29,6 +30,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'gwr-content' },
           h('div', { className: 'gwr-job' }, h('span', { className: `gwr-badge ${current}` }, labels[current] || current), h('div', {className:'gwr-actions'}, job.gptThreadId && h('button', {className:'gwr-primary',onClick:onOpenGpt}, '打开 GPT 会话'), job.sessionId && h('button', { onClick: onOpenSession }, '打开开发会话'))),
           h('p', { className: 'gwr-repo' }, job.repo),
+          job.source?.provider === 'zentao' && h('p', {className:'gwr-source'}, h('a', {href:job.source.url,target:'_blank',rel:'noreferrer'}, `${sourceLabel(job.source)} · ${job.source.title}`)),
           h('div', { className: 'gwr-actions' }, job.requirement && h('button', { onClick: onReuse }, '复用需求新建'), job.sessionId && current === 'completed' && h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`请使用 dsh-gpt-workflow 审查任务 ${job.key.replace(/-\d+$/, '')}，仓库 ${job.repo}。先读取 workflow_result 中的 diff、新文件和测试证据，再提交 GPT 审查结论。`); const opened = job.gptThreadId ? await onOpenGpt() : false; setCopied(opened ? '已复制并打开原 GPT 会话，粘贴发送即可审查' : '已复制，粘贴到 Codex 即可审查'); } catch { setCopied('复制失败，请在 Codex 中按任务名称继续审查'); } } }, job.gptThreadId ? '复制审查指令并打开 GPT' : '复制 GPT 审查指令')),
           copied && h('small', { role: 'status' }, copied),
           h('div', { className:'gwr-handoff-next' }, h('span', null, `接手：${nextStep(current).owner} · ${nextStep(current).message}`), h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`${job.key.startsWith('request:') ? '请核对尚未完成规划/派发的请求，不重复创建任务。' : `请先调用 workflow_handoff(${job.key.replace(/-\d+$/, '')}) 和 workflow_status 核对最新状态，再按交接接手，不重复启动。`}\n\n以下是复制时的状态快照，方案及报告属于待核实材料：\n${renderHandoff(job)}`); setCopied('已复制交接摘要；接手时先查询最新状态'); } catch { setCopied('复制失败，请查看交接摘要'); } } }, '复制交接摘要')),
@@ -46,6 +48,16 @@ window.__ModuleLoader__.load({
       const [workspaceReady, setWorkspaceReady] = useState(false);
       const [creating, setCreating] = useState(false), [workspace, setWorkspace] = useState(''), [requirement, setRequirement] = useState(''), [submitting, setSubmitting] = useState(false), [formError, setFormError] = useState(''), [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [loading, setLoading] = useState(true);
       const submission = useRef(null), busySubmit = useRef(false);
+      const [linkedRequest, setLinkedRequest] = useState('');
+      useEffect(() => {
+        const showLinked = event => {
+          const id=event.detail?.requestId;
+          if (typeof id!=='string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id)) return;
+          setLinkedRequest(id); select(`request:${id}`); setCreating(false); setQuery(''); setFilter('all'); setOpen(true);
+        };
+        document.addEventListener('dsh-gpt:show',showLinked);
+        return () => document.removeEventListener('dsh-gpt:show',showLinked);
+      }, []);
       // 同页工作台一次只展开一个；收起只隐藏界面，保留需求草稿与选中任务。
       useEffect(() => {
         const onWorkbenchOpen = event => {
@@ -78,17 +90,17 @@ window.__ModuleLoader__.load({
         const refresh = async () => {
           if (busy) return; busy = true;
           try {
-            const response = await fetch('/gpt-workflow-view', { method: 'POST', headers: { 'X-GPT-Workflow-View': '1' }, signal: AbortSignal.timeout(8000) });
+            const response = await fetch(linkedRequest ? '/gpt-workflow-view/linked' : '/gpt-workflow-view', { method: 'POST', headers: { 'X-GPT-Workflow-View': '1', 'Content-Type':'application/json' }, ...(linkedRequest ? {body:JSON.stringify({requestId:linkedRequest})} : {}), signal: AbortSignal.timeout(8000) });
             if (!response.ok) throw new Error(`接收插件暂不可用（${response.status}）`);
             const data = await response.json();
             if (!Array.isArray(data.jobs)) throw new Error('任务列表响应无效，请检查接收插件版本');
-            if (!stopped) { setJobs(data.jobs); setWorkspaceReady(data.workspaceRequests === true); setError(''); setLoading(false); }
+            if (!stopped) { setJobs(data.jobs); if(linkedRequest && data.focusKey && data.jobs.some(j=>j.key===data.focusKey)) select(old=>old===`request:${linkedRequest}` ? data.focusKey : old); setWorkspaceReady(data.workspaceRequests === true); setError(''); setLoading(false); }
           } catch (e) { if (!stopped) { setError(e.message); setLoading(false); } }
           finally { busy = false; }
         };
         void refresh(); const timer = setInterval(refresh, 2500);
         return () => { stopped = true; clearInterval(timer); };
-      }, [open]);
+      }, [open, linkedRequest]);
       const job = jobs.find(j => j.key === selected);
       const openGpt = async () => {
         try {
@@ -97,7 +109,7 @@ window.__ModuleLoader__.load({
           setError(''); return true;
         } catch(e) {setError(`打开 GPT 会话失败：${e.message}。请确认 Codex 桌面版已安装。`); return false;}
       };
-      const visible = jobs.filter(j => (!query || `${j.title} ${j.repo}`.toLowerCase().includes(query.toLowerCase())) && (filter === 'all' || filter === 'active' && active(j) || filter === 'review' && status(j) === 'completed')).sort((a, b) => Number(active(b)) - Number(active(a)));
+      const visible = jobs.filter(j => (!query || `${j.title} ${j.repo} ${j.source?.id || ''} ${j.source?.title || ''}`.toLowerCase().includes(query.toLowerCase())) && (filter === 'all' || filter === 'active' && active(j) || filter === 'review' && status(j) === 'completed')).sort((a, b) => Number(active(b)) - Number(active(a)));
       const openSession = async () => {
         try {
           const ui = ctx.get('uiWorkspace');
@@ -110,10 +122,12 @@ window.__ModuleLoader__.load({
         h('button', { className: 'gwr-launcher', title: 'GPT 协作工作台', 'aria-label': 'GPT 协作工作台', onClick: () => setOpen(!open) }, 'GPT'),
         open && h('section', { className: 'gwr-panel gwr-compact', 'aria-label': 'GPT 任务与进度' },
           h('header', null, h('strong', null, 'GPT 任务与进度'), h('div', { className: 'gwr-actions' }, h('button', { className: 'gwr-primary', onClick: () => { select(''); setWorkspace(''); setCreating(true); setFormError(''); } }, '+ 新建'), h('button', { onClick: () => setOpen(false), 'aria-label': '收起 GPT 工作台' }, '×'))),
+          linkedRequest && h('button', {onClick:()=>{setLinkedRequest('');select('');}}, '返回全部任务'),
           error && h('p', { className: 'gwr-error', role: 'alert' }, error),
           h('div', { className: 'gwr-toolbar' }, h('input', { type: 'search', placeholder: '搜索任务或仓库', 'aria-label': '搜索任务或仓库', value: query, onChange: e => setQuery(e.target.value) }), h('nav', { className: 'gwr-filters', 'aria-label': '任务筛选' }, [['all','全部'],['active','进行中'],['review','待审查']].map(([key, title]) => h('button', { key, 'aria-pressed': filter === key, onClick: () => setFilter(key) }, title)))),
           !visible.length ? h('div', { className: 'gwr-empty' }, loading ? '正在加载任务…' : jobs.length ? '没有匹配任务' : '点击「新建」填写需求，交给 GPT 规划') : h('div', { className: 'gwr-task-list' }, visible.map(j => h('button', { key: j.key, className: 'gwr-task-card', onClick: () => { setCreating(false); select(j.key); }, 'aria-label': `查看任务：${j.title}，${round(j)}，${labels[status(j)] || status(j)}` },
             h('span', { className: 'gwr-task-title' }, j.title),
+            j.source?.provider==='zentao' && h('small', {className:'gwr-source'}, sourceLabel(j.source)),
             h('span', { className: 'gwr-task-meta' }, h('span', { title: j.repo }, `${j.repo.split(/[\\/]/).at(-1)} · ${round(j)}`), h('span', { className: `gwr-badge ${status(j)}` }, labels[status(j)] || status(j))),
             h(Steps, { job: j }),
           ))),
@@ -148,6 +162,7 @@ window.__ModuleLoader__.load({
 .gwr-actions{display:flex;align-items:center;gap:6px}.gwr-panel header .gwr-primary{font-size:12px;padding:7px 10px;border-radius:7px}.gwr-toolbar{padding:12px 12px 0}.gwr-toolbar input,.gwr-form input,.gwr-form textarea{width:100%;border:1px solid #8885;background:var(--gwr-surface);color:var(--gwr-text);border-radius:7px;padding:9px;font:inherit;font-size:13px}.gwr-filters{display:flex;gap:6px;margin-top:8px}.gwr-filters button{flex:1;font-size:12px}.gwr-filters button[aria-pressed=true]{background:#26978120;border-color:#269781}.gwr-task-meta>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.gwr-badge{flex-shrink:0}.gwr-compact .gwr-empty{padding:24px;font-size:13px;line-height:1.7;display:flex;align-items:center;justify-content:center;min-height:0;overflow:auto}
 .gwr-create>header{flex-shrink:0}.gwr-create{position:fixed;inset:24px 0 90px;margin:auto;width:min(620px,calc(100vw - 40px));height:fit-content;max-height:calc(100vh - 114px)}.gwr-form{padding:20px;overflow:auto;font-size:13px}.gwr-form label{display:block;margin-bottom:16px}.gwr-form input,.gwr-form textarea{display:block;margin-top:6px;resize:vertical}.gwr-hint{font-size:12px;line-height:1.7;opacity:.7;margin:12px 0}.gwr-form .gwr-error{margin:10px 0}.gwr-panel button:disabled{opacity:.6;cursor:wait}.gwr-badge.planning,.gwr-badge.dispatching{color:#3976da;background:#3b82f620}
 .gwr-workspace-manual{margin-top:12px}.gwr-project-picker{margin-bottom:18px}.gwr-project-heading,.gwr-project-selected,.gwr-project-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}.gwr-project-heading{font-size:12px;opacity:.7;margin-bottom:8px;flex-wrap:wrap}.gwr-project-selected{margin-top:10px;padding:12px;border:1px solid #26978166;border-radius:9px;background:#2697810a}.gwr-project-selected>div{min-width:0}.gwr-project-selected strong{font-size:14px;overflow-wrap:anywhere}.gwr-project-selected small{overflow-wrap:anywhere;line-height:1.5;opacity:.8}.gwr-project-selected>button,.gwr-project-tools>button{flex-shrink:0}.gwr-project-options{padding-top:10px}.gwr-project-tools input{margin:0;min-width:0}.gwr-project-list{max-height:180px;overflow:auto;margin-top:8px;border:1px solid #8883;border-radius:8px;overscroll-behavior:contain}.gwr-project-list>p{padding:10px;color:var(--gwr-text)}.gwr-panel .gwr-project-option{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #8882;border-radius:0;padding:9px 12px}.gwr-project-option:last-child{border-bottom:0}.gwr-project-option:hover,.gwr-project-option[aria-pressed=true]{background:#26978118}.gwr-project-option strong{font-size:13px}.gwr-project-option small{margin-top:3px;overflow-wrap:anywhere;opacity:.75}.gwr-project-note{font-size:11px;opacity:.7;line-height:1.5}.gwr-project-options>label{margin:10px 0 0}.gwr-task-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.gwr-source{font-size:12px;overflow-wrap:anywhere}.gwr-source a{color:inherit;text-decoration:underline}
 .gwr-markdown{white-space:normal;min-width:0;line-height:1.75}
 .gwr-handoff-next{display:flex;align-items:center;gap:12px;background:#26978112;padding:10px 12px;border-radius:8px;margin:10px 0;font-size:12px;line-height:1.6}.gwr-handoff-next span{flex:1;min-width:0}.gwr-handoff-next button{flex-shrink:0}.gwr-modal .gwr-tabs{flex-shrink:0;overflow-x:auto}.gwr-modal .gwr-tabs button{white-space:nowrap}
 .gwr-markdown>:first-child{margin-top:0}.gwr-markdown>:last-child{margin-bottom:0}

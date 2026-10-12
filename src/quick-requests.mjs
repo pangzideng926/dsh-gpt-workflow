@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { atomicJson, snapshot } from './workflow.mjs';
 import { requestTaskIds } from './workspace-selection.mjs';
+import { normalizeZentaoSource, zentaoRequestId } from './zentao-source.mjs';
 
 function resolveTarget(workspace, candidate) {
   if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) throw new Error('GPT 返回的仓库路径无效');
@@ -44,6 +45,15 @@ export class QuickRequests {
     });
   }
   async accept(input) {
+    if (input.source !== undefined) {
+      const source=normalizeZentaoSource(input.source), id=zentaoRequestId(source);
+      if (fs.existsSync(this.file(id))) {
+        const old=this.get(id);
+        if (!old.source || zentaoRequestId(old.source)!==id) throw new Error('禅道关联记录冲突，请核对原请求');
+        return old;
+      }
+      return this.acceptWorkspace({...input,id,source});
+    }
     if (input.workspace !== undefined) return this.acceptWorkspace(input);
     this.file(input.id);
     if (typeof input.repo !== 'string' || !path.isAbsolute(input.repo)) throw new Error('请选择具体 Git 仓库的绝对路径');
@@ -88,14 +98,14 @@ export class QuickRequests {
     const workspace = fs.realpathSync.native(input.workspace);
     if (!fs.statSync(workspace).isDirectory()) throw new Error('工作区必须是目录');
     const requirement = input.requirement.trim();
-    const digest = createHash('sha256').update(JSON.stringify({ workspace, requirement })).digest('hex');
+    const digest = createHash('sha256').update(JSON.stringify({ workspace, requirement, source:input.source })).digest('hex');
     if (fs.existsSync(this.file(input.id))) {
       const old = this.get(input.id);
       if (old.digest !== digest) throw new Error('同一请求 ID 内容不一致');
       return old;
     }
     if (this.list().some(j => j.workspace === workspace && ['planning','dispatching','interrupted'].includes(j.status))) throw new Error('该工作区已有规划或待核查请求，请先处理原任务');
-    const item = { id:input.id, key:`request:${input.id}`, title:requirement.split('\n')[0].slice(0,80), workspace, repo:workspace, requirement, digest, status:'planning', stage:'locate', createdAt:new Date().toISOString() };
+    const item = { source:input.source, id:input.id, key:`request:${input.id}`, title:requirement.split('\n')[0].slice(0,80), workspace, repo:workspace, requirement, digest, status:'planning', stage:'locate', createdAt:new Date().toISOString() };
     this.save(item);
     const update = info => { Object.assign(item, info); this.save(item); };
     const work = Promise.resolve().then(async()=>{
