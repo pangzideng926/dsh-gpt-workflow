@@ -161,6 +161,7 @@ export class Workflow {
         logFd = fs.openSync(path.join(task.runDir, 'worker.log'), 'a');
         const worker = spawn(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url)), this.home, id], {
           detached: true, windowsHide: true, stdio: ['ignore', logFd, logFd], cwd: task.repo,
+          env: { ...process.env, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}) },
         });
         if (!worker.pid) throw new Error('无法启动监督进程');
         worker.on('error', () => {}); // 失败由状态检查/恢复处理，避免后台未处理异常。

@@ -4,7 +4,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { ReceiverStore } from './receiver-store.mjs';
 import { serveReceiver } from './receiver-http.mjs';
 import { receiverHome } from './receiver-client.mjs';
-import { atomicJson, snapshot } from './workflow.mjs';
+import { atomicJson, snapshot, Workflow } from './workflow.mjs';
+import { QuickRequests } from './quick-requests.mjs';
+import { createPlanner } from './codex-planner.mjs';
+import { panelHandler } from './panel-api.mjs';
 
 export const name = 'gpt-workflow-receiver';
 export const inject = ['agents', 'agentPresets', 'agentDefaultModel', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'sessions'];
@@ -72,17 +75,11 @@ export async function executeJob(ctx, request, job, home) {
 export async function apply(ctx) {
   const home = receiverHome(); fs.mkdirSync(home, { recursive: true });
   const store = new ReceiverStore(path.join(home, 'jobs'), (request, job) => executeJob(ctx, request, job, home));
+  const abort = new AbortController();
+  const requests = new QuickRequests(path.join(home, 'requests'), { workflow: new Workflow(), plan: createPlanner(path.join(home, 'planning'), abort.signal) });
+  ctx.on('dispose', () => abort.abort());
   ctx.inject(['webServer'], webCtx => {
-    webCtx.effect(() => webCtx.webServer.register({ kind: 'prefix', path: '/gpt-workflow-view', handler: (req, res) => {
-      const origin = req.headers.origin;
-      const allowedOrigin = !origin || origin === 'dsh-app://app' || origin === `http://${req.headers.host}` || origin === `https://${req.headers.host}`;
-      if (req.method !== 'POST' || req.headers['x-gpt-workflow-view'] !== '1' || !allowedOrigin) { res.writeHead(403); res.end(); return; }
-      try {
-        const jobs = store.list().slice(0, 100).map(({ digest, eventsPath, ...job }) => job);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ jobs }));
-      } catch { res.writeHead(500); res.end(JSON.stringify({ error: '无法读取任务记录' })); }
-    } }), 'gpt-workflow-receiver: panel');
+    webCtx.effect(() => webCtx.webServer.register({ kind: 'prefix', path: '/gpt-workflow-view', handler: panelHandler(store, requests) }), 'gpt-workflow-receiver: panel');
   });
   const token = randomBytes(32).toString('hex');
   const { server, url } = await serveReceiver(store, token);
