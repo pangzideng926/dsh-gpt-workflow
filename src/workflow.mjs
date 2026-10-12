@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { receiverRequest } from './receiver-client.mjs';
+import { createHandoff, renderHandoff, nextStep, reportCoverage } from './handoff.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const now = () => new Date().toISOString();
@@ -133,6 +134,23 @@ export class Workflow {
   async list() {
     return Promise.all(fs.readdirSync(path.join(this.home, 'tasks')).filter(id => /^[0-9a-f-]{36}$/.test(id)).map(id => this.status(id)));
   }
+  async handoff(id) {
+    const task = this.load(id);
+    const packetPath = task.status !== 'planned' && task.runDir ? path.join(task.runDir, 'handoff.json') : null;
+    const packet = packetPath && fs.existsSync(packetPath) ? readJson(packetPath)
+      : createHandoff({ ...task, attempt: task.status === 'planned' ? task.attempt + 1 : task.attempt, runDir: task.status === 'planned' ? undefined : task.runDir }, fs.readFileSync(task.planPath, 'utf8'), task.status === 'planned' ? task.runDir : undefined);
+    const evidencePath = task.status !== 'planned' && task.runDir ? path.join(task.runDir, 'evidence.json') : null;
+    const evidence = evidencePath && fs.existsSync(evidencePath) ? readJson(evidencePath) : undefined;
+    const next = nextStep(task.status, { workerAlive: task.status === 'running' ? alive(task.workerPid) : undefined });
+    const review = task.status !== 'planned' ? task.reviews.find(r => r.attempt === task.attempt) : undefined;
+    const resultPath = task.runDir && path.join(task.runDir, '开发交接.md');
+    return { packet, packetPath: packetPath && fs.existsSync(packetPath) ? packetPath : null,
+      resultPath: task.status !== 'planned' && resultPath && fs.existsSync(resultPath) ? resultPath : null,
+      next, report: evidence ? reportCoverage(evidence.answer) : null,
+      markdown: renderHandoff({ ...task, packet, next, review, evidence, answer: evidence?.answer,
+        error: task.status === 'planned' ? undefined : task.error, sessionId: task.status === 'planned' ? undefined : task.sessionId }),
+    };
+  }
   async start(id) {
     const desktop = !this.command && !process.env.DSH_WORKFLOW_BIN;
     if (desktop) {
@@ -149,6 +167,7 @@ export class Workflow {
       fs.writeFileSync(lock, JSON.stringify({ id, home: this.home, createdAt: now() }), { flag: 'wx', mode: 0o600 });
       let logFd;
       try {
+        const previousRunDir = task.runDir;
         task.attempt++;
         task.status = 'running'; task.command = command; task.timeoutMs = this.timeoutMs;
         task.backend = desktop ? 'desktop' : 'headless';
@@ -157,6 +176,9 @@ export class Workflow {
         fs.mkdirSync(task.runDir, { recursive: true });
         fs.copyFileSync(task.planPath, path.join(task.runDir, '实施方案.md'));
         delete task.error; delete task.developerPid; delete task.workerPid; delete task.sessionId;
+        const handoff = createHandoff({ ...task, planPath: path.join(task.runDir, '实施方案.md') }, fs.readFileSync(task.planPath, 'utf8'), previousRunDir);
+        atomicJson(path.join(task.runDir, 'handoff.json'), handoff);
+        fs.writeFileSync(path.join(task.runDir, '交接摘要.md'), renderHandoff({ ...task, packet: handoff }), { mode: 0o600 });
         this.save(task);
         logFd = fs.openSync(path.join(task.runDir, 'worker.log'), 'a');
         const worker = spawn(process.execPath, [fileURLToPath(new URL('./worker.mjs', import.meta.url)), this.home, id], {
@@ -178,7 +200,7 @@ export class Workflow {
     const evidencePath = path.join(task.runDir, 'evidence.json');
     if (!fs.existsSync(evidencePath)) return { ...this.publicTask(task), error: task.error, logPath: path.join(task.runDir, 'worker.log') };
     const evidence = readJson(evidencePath);
-    return { ...this.publicTask(task), ...evidence, evidencePath, diffPath: path.join(task.runDir, 'changes.diff'), eventsPath: path.join(task.runDir, 'events.jsonl'), stderrPath: path.join(task.runDir, 'stderr.log') };
+    return { ...this.publicTask(task), ...evidence, handoff: await this.handoff(id), evidencePath, diffPath: path.join(task.runDir, 'changes.diff'), eventsPath: path.join(task.runDir, 'events.jsonl'), stderrPath: path.join(task.runDir, 'stderr.log') };
   }
   async review(id, { verdict, summary, evidenceHash }) {
     const reviewed = this.operation(id, task => {
@@ -250,6 +272,8 @@ export class Workflow {
     fs.writeFileSync(path.join(task.runDir, 'changes.diff'), current.diff);
     task.status = exitCode === 0 && !error ? 'awaiting_review' : 'failed';
     task.error = error || null; task.sessionId = sessionId; task.finishedAt = now();
+    const packetFile = path.join(task.runDir, 'handoff.json');
+    fs.writeFileSync(path.join(task.runDir, '开发交接.md'), renderHandoff({ ...task, packet: fs.existsSync(packetFile) ? readJson(packetFile) : undefined, evidence, answer }), { mode: 0o600 });
     this.save(task);
     if (task.status === 'failed') this.release(task);
   }

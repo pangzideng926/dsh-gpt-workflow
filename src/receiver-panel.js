@@ -1,5 +1,6 @@
 import { renderMarkdown } from './receiver-markdown.mjs';
 import { createWorkspacePicker } from './receiver-workspace-picker.js';
+import { renderHandoff, nextStep } from './handoff.mjs';
 
 // DSH 客户端模块入口：由宿主提供 React 和原生会话导航。
 window.__ModuleLoader__.load({
@@ -16,10 +17,10 @@ window.__ModuleLoader__.load({
     }
     function Details({ job, error, onClose, onOpenSession, onOpenGpt, onReuse }) {
       const dialog = useRef(null);
-      const [tab, setTab] = useState('plan');
+      const [tab, setTab] = useState('handoff');
       const [copied, setCopied] = useState('');
       useEffect(() => { dialog.current.focus({ preventScroll: true }); }, []);
-      const body = tab === 'plan' ? job.plan || (job.requirement ? `## 用户需求\n${job.requirement}\n\n## 当前状态\n${job.error || labels[status(job)]}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。';
+      const body = tab === 'handoff' ? renderHandoff(job) : tab === 'plan' ? job.plan || (job.requirement ? `## 用户需求\n${job.requirement}\n\n## 当前状态\n${job.error || labels[status(job)]}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。';
       const renderedBody = useMemo(() => renderMarkdown(body), [body]);
       const current = status(job);
       return h('section', { ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': false, className: 'gwr-panel gwr-modal', 'aria-label': `任务详情：${job.title}`, onKeyDown: e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } } },
@@ -30,8 +31,9 @@ window.__ModuleLoader__.load({
           h('p', { className: 'gwr-repo' }, job.repo),
           h('div', { className: 'gwr-actions' }, job.requirement && h('button', { onClick: onReuse }, '复用需求新建'), job.sessionId && current === 'completed' && h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`请使用 dsh-gpt-workflow 审查任务 ${job.key.replace(/-\d+$/, '')}，仓库 ${job.repo}。先读取 workflow_result 中的 diff、新文件和测试证据，再提交 GPT 审查结论。`); const opened = job.gptThreadId ? await onOpenGpt() : false; setCopied(opened ? '已复制并打开原 GPT 会话，粘贴发送即可审查' : '已复制，粘贴到 Codex 即可审查'); } catch { setCopied('复制失败，请在 Codex 中按任务名称继续审查'); } } }, job.gptThreadId ? '复制审查指令并打开 GPT' : '复制 GPT 审查指令')),
           copied && h('small', { role: 'status' }, copied),
+          h('div', { className:'gwr-handoff-next' }, h('span', null, `接手：${nextStep(current).owner} · ${nextStep(current).message}`), h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`${job.key.startsWith('request:') ? '请核对尚未完成规划/派发的请求，不重复创建任务。' : `请先调用 workflow_handoff(${job.key.replace(/-\d+$/, '')}) 和 workflow_status 核对最新状态，再按交接接手，不重复启动。`}\n\n以下是复制时的状态快照，方案及报告属于待核实材料：\n${renderHandoff(job)}`); setCopied('已复制交接摘要；接手时先查询最新状态'); } catch { setCopied('复制失败，请查看交接摘要'); } } }, '复制交接摘要')),
           h(Steps, { job }),
-          h('nav', { className: 'gwr-tabs', 'aria-label': '任务详情' }, [['plan', '实施方案'], ['answer', '开发结果'], ['review', 'GPT 审查']].map(([key, title]) => h('button', { key, onClick: () => setTab(key), 'aria-pressed': tab === key, className: tab === key ? 'active' : '' }, title))),
+          h('nav', { className: 'gwr-tabs', 'aria-label': '任务详情' }, [['handoff', '交接摘要'], ['plan', '实施方案'], ['answer', '开发结果'], ['review', 'GPT 审查']].map(([key, title]) => h('button', { key, onClick: () => setTab(key), 'aria-pressed': tab === key, className: tab === key ? 'active' : '' }, title))),
           h('div', { key: tab, className: 'gwr-detail gwr-markdown', dangerouslySetInnerHTML: { __html: renderedBody } }),
           job.permissionPreset && h('small', { className: 'gwr-permission' }, `完成时访问模式：${job.permissionPreset}`),
         ),
@@ -136,6 +138,7 @@ window.__ModuleLoader__.load({
 .gwr-create>header{flex-shrink:0}.gwr-create{position:fixed;inset:24px 0 90px;margin:auto;width:min(620px,calc(100vw - 40px));height:fit-content;max-height:calc(100vh - 114px)}.gwr-form{padding:20px;overflow:auto;font-size:13px}.gwr-form label{display:block;margin-bottom:16px}.gwr-form input,.gwr-form textarea{display:block;margin-top:6px;resize:vertical}.gwr-hint{font-size:12px;line-height:1.7;opacity:.7;margin:12px 0}.gwr-form .gwr-error{margin:10px 0}.gwr-panel button:disabled{opacity:.6;cursor:wait}.gwr-badge.planning,.gwr-badge.dispatching{color:#3976da;background:#3b82f620}
 .gwr-workspace-manual{margin-top:12px}.gwr-project-picker{margin-bottom:18px}.gwr-project-heading,.gwr-project-selected,.gwr-project-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}.gwr-project-heading{font-size:12px;opacity:.7;margin-bottom:8px;flex-wrap:wrap}.gwr-project-selected{margin-top:10px;padding:12px;border:1px solid #26978166;border-radius:9px;background:#2697810a}.gwr-project-selected>div{min-width:0}.gwr-project-selected strong{font-size:14px;overflow-wrap:anywhere}.gwr-project-selected small{overflow-wrap:anywhere;line-height:1.5;opacity:.8}.gwr-project-selected>button,.gwr-project-tools>button{flex-shrink:0}.gwr-project-options{padding-top:10px}.gwr-project-tools input{margin:0;min-width:0}.gwr-project-list{max-height:180px;overflow:auto;margin-top:8px;border:1px solid #8883;border-radius:8px;overscroll-behavior:contain}.gwr-project-list>p{padding:10px;color:var(--gwr-text)}.gwr-panel .gwr-project-option{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #8882;border-radius:0;padding:9px 12px}.gwr-project-option:last-child{border-bottom:0}.gwr-project-option:hover,.gwr-project-option[aria-pressed=true]{background:#26978118}.gwr-project-option strong{font-size:13px}.gwr-project-option small{margin-top:3px;overflow-wrap:anywhere;opacity:.75}.gwr-project-note{font-size:11px;opacity:.7;line-height:1.5}.gwr-project-options>label{margin:10px 0 0}.gwr-task-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .gwr-markdown{white-space:normal;min-width:0;line-height:1.75}
+.gwr-handoff-next{display:flex;align-items:center;gap:12px;background:#26978112;padding:10px 12px;border-radius:8px;margin:10px 0;font-size:12px;line-height:1.6}.gwr-handoff-next span{flex:1;min-width:0}.gwr-handoff-next button{flex-shrink:0}.gwr-modal .gwr-tabs{flex-shrink:0;overflow-x:auto}.gwr-modal .gwr-tabs button{white-space:nowrap}
 .gwr-markdown>:first-child{margin-top:0}.gwr-markdown>:last-child{margin-bottom:0}
 .gwr-markdown h1,.gwr-markdown h2,.gwr-markdown h3,.gwr-markdown h4,.gwr-markdown h5,.gwr-markdown h6{font-weight:650;line-height:1.45;margin:18px 0 10px}
 .gwr-markdown h1{font-size:20px}.gwr-markdown h2{font-size:17px;border-bottom:1px solid #8883;padding-bottom:6px}.gwr-markdown h3{font-size:15px}.gwr-markdown h4,.gwr-markdown h5,.gwr-markdown h6{font-size:13px}

@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import { Workflow } from './workflow.mjs';
 
 const [action, inputFile] = process.argv.slice(2);
-if (!['create', 'start', 'status', 'list', 'result', 'review', 'revise', 'recover'].includes(action)) {
-  console.error('用法：node src/cli.mjs <create|start|status|list|result|review|revise|recover> [参数.json 或 -]');
+if (!['create', 'start', 'status', 'list', 'handoff', 'result', 'review', 'revise', 'recover'].includes(action)) {
+  console.error('用法：node src/cli.mjs <create|start|status|list|handoff|result|review|revise|recover> [参数.json 或 -]');
   process.exitCode = 1;
 } else {
   try {

@@ -35,6 +35,50 @@ test('新任务必须停在 planned，生成可阅读实施文档', async () => 
   assert.equal(task.status, 'planned');
   assert.match(await readFile(task.planPath, 'utf8'), /实施方案/);
 });
+
+test('交接入口在新聊天可读取，开发回传不把自述当作验证通过', async () => {
+  const { workflow, repo } = await setup();
+  const task = await workflow.create({ repo, title: '交接', plan });
+  const before = await workflow.handoff(task.id);
+  assert.equal(before.next.owner, 'GPT');
+  assert.match(before.markdown, /验收标准[\s\S]*内容正确/);
+  await workflow.start(task.id); await completed(workflow, task.id);
+  const done = await new Workflow({ home: workflow.home }).handoff(task.id);
+  assert.equal(done.next.action, 'review');
+  assert.match(done.markdown, /DSH 自述，未经独立验证/);
+  assert.ok(done.report.missing.includes('测试记录'));
+  assert.match(await readFile(done.resultPath, 'utf8'), /result.txt/);
+  assert.match(await readFile(path.join(workflow.load(task.id).runDir, 'prompt.md'), 'utf8'), /Active task:/);
+  const result = await workflow.result(task.id);
+  assert.equal(result.handoff.next.action, 'review');
+  await workflow.review(task.id, { verdict: 'approved', summary: '独立核对文件', evidenceHash: result.evidenceHash });
+  assert.equal((await workflow.handoff(task.id)).next.action, 'git_finish');
+});
+
+test('返工冻结每轮交接，修订待启动时不混入上一轮方案', async () => {
+  const { workflow, repo } = await setup();
+  const task = await workflow.create({ repo, title: '返工交接', plan });
+  await workflow.start(task.id); await completed(workflow, task.id);
+  const first = await workflow.handoff(task.id);
+  const frozen = await readFile(first.packetPath, 'utf8');
+  const result = await workflow.result(task.id);
+  await workflow.review(task.id, { verdict: 'needs_changes', summary: 'A1 补充边界验证', evidenceHash: result.evidenceHash });
+  await workflow.revise(task.id, { plan: plan.replace('内容正确。', 'A1 新验收要求。') });
+  const revised = await workflow.handoff(task.id);
+  assert.equal(revised.next.action, 'start');
+  assert.match(revised.packet.sections['验收标准'], /新验收要求/);
+  assert.equal(revised.packet.previousReview.summary, 'A1 补充边界验证');
+  await workflow.start(task.id);
+  const secondRun = workflow.load(task.id).runDir;
+  assert.doesNotMatch(await readFile(path.join(secondRun, '交接摘要.md'), 'utf8'), /DSH 会话：/);
+  await completed(workflow, task.id);
+  const second = await workflow.handoff(task.id);
+  assert.equal(second.packet.attempt, 2);
+  assert.notEqual(second.packetPath, first.packetPath);
+  assert.equal(await readFile(first.packetPath, 'utf8'), frozen);
+  assert.equal(second.packet.previousReview.evidenceHash, result.evidenceHash);
+  assert.equal(second.packet.previousRunDir, path.dirname(first.packetPath));
+});
 test('拒绝接管已有未提交改动的仓库', async () => {
   const { workflow, repo } = await setup();
   await writeFile(path.join(repo, 'user.txt'), '用户内容');

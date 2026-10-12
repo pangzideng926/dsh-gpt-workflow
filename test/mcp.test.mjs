@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-test('MCP 握手、八个工具发现、无害查询和参数校验', async () => {
+test('MCP 握手、九个工具发现、无害查询和参数校验', async () => {
   const home = mkdtempSync(path.join(os.tmpdir(), 'dsh-gpt-mcp-'));
   const server = process.env.DSH_WORKFLOW_TEST_SERVER || fileURLToPath(new URL('../src/server.mjs', import.meta.url));
   const transport = new StdioClientTransport({ command: process.execPath, args: [server], env: { ...process.env, DSH_WORKFLOW_HOME: home } });
@@ -16,7 +16,8 @@ test('MCP 握手、八个工具发现、无害查询和参数校验', async () =
   try {
     await client.connect(transport);
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 8);
+    assert.equal(tools.length, 9);
+    assert.equal(tools.find(t => t.name === 'workflow_handoff').annotations.readOnlyHint, true);
     assert.ok(tools.some(t => t.name === 'workflow_review'));
     const result = await client.callTool({ name: 'workflow_list', arguments: {} });
     assert.deepEqual(JSON.parse(result.content[0].text), []);
@@ -46,6 +47,7 @@ test('通过 MCP 启动独立 worker，开发结果回传并提交 GPT 审查结
     await client.connect(transport);
     const plan = '# 实施方案\n\n## 目标与范围\n演示。\n## 代码依据\nREADME.md\n## 实施步骤\n新增 result.txt。\n## 验收标准\n文件存在。\n## 测试要求\n核对内容。';
     const task = await call('workflow_create', { repo, title: 'MCP 完整闭环', plan });
+    assert.equal((await call('workflow_handoff', { id: task.id })).next.action, 'start');
     await call('workflow_start', { id: task.id });
     let status;
     for (let n = 0; n < 120; n++) {

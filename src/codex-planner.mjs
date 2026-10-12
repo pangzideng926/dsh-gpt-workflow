@@ -75,7 +75,8 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
       });
       // 提前挂接拒绝处理，避免 turn/start 失败与退出事件竞争产生未处理拒绝。
       done.catch(()=>{});
-      await client.request('turn/start',{threadId:thread.id,input:[{type:'text',text:prompt}],outputSchema:JSON.parse(fs.readFileSync(schema,'utf8'))});
+      const handoffGuidance = locating ? '' : '\n交接要求：代码依据列出精简的实际文件/规范引用及读取用途，注明开发/审查适用，不复制大段上下文；验收标准用稳定编号 A1、A2…，每条给出观察方法和期望结果；实施步骤注明依赖与停止交回 GPT 的条件；测试要求写工作目录、具体命令、环境前提，区分已验证事实和待验证假设。只维护这一份方案，不要求 Trellis 初始化、任务目录或额外三份文档。';
+      await client.request('turn/start',{threadId:thread.id,input:[{type:'text',text:prompt + handoffGuidance}],outputSchema:JSON.parse(fs.readFileSync(schema,'utf8'))});
       await done;
       if (!answer || Buffer.byteLength(answer)>300000) throw new Error('GPT 规划结果为空或过大');
       const result = JSON.parse(answer);

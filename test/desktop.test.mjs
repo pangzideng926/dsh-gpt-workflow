@@ -15,7 +15,11 @@ test('桌面接收端完整传输：派单、worker 回传、GPT 审查同步且
   git('init', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid');
   fs.writeFileSync(path.join(repo, 'README.md'), 'fixture'); git('add', 'README.md'); git('commit', '-m', '初始化');
   let count = 0;
-  const store = new ReceiverStore(path.join(root, 'receiver'), async () => {
+  const store = new ReceiverStore(path.join(root, 'receiver'), async request => {
+    assert.equal(request.handoff.id, request.id);
+    assert.equal(request.handoff.baseline.fingerprint, request.baseline);
+    assert.match(request.prompt, /Active task:/);
+    assert.match(request.prompt, /## 测试记录/);
     count++; fs.writeFileSync(path.join(repo, 'result.txt'), '桌面传输替身');
     return { answer: '完成', exitCode: 0 };
   });
@@ -42,6 +46,8 @@ test('桌面接收端完整传输：派单、worker 回传、GPT 审查同步且
     assert.equal(store.list()[0].review.verdict, 'approved');
     assert.equal(workflow.load(task.id).reviewDelivery, 'delivered');
     assert.equal(store.list()[0].plan, plan);
+    const { sections, ...metadata } = (await workflow.handoff(task.id)).packet;
+    assert.deepEqual(store.list()[0].handoff, metadata);
     assert.equal(count, 1);
   } finally {
     if (before === undefined) delete process.env.DSH_WORKFLOW_RECEIVER_FILE; else process.env.DSH_WORKFLOW_RECEIVER_FILE = before;

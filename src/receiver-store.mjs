@@ -39,7 +39,7 @@ export class ReceiverStore {
       if (old.digest !== digest) throw new Error('同一任务轮次内容不一致');
       return old;
     }
-    const job = { key, digest, sessionId: `gpt-${randomUUID()}`, status: 'accepted', title: request.title, repo: request.repo, plan: request.plan || request.prompt, createdAt: new Date().toISOString() };
+    const job = { key, digest, sessionId: `gpt-${randomUUID()}`, status: 'accepted', title: request.title, repo: request.repo, plan: request.plan || request.prompt, handoff: request.handoff, createdAt: new Date().toISOString() };
     this.save(job); // 第一个 await 之前落盘；中途崩溃也不重放。
     const work = Promise.resolve().then(async () => {
       job.status = 'running'; this.save(job);

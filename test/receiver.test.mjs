@@ -13,6 +13,16 @@ test('并发重复投递只创建一个 DSH 会话', async () => {
   assert.equal(count, 1);
   assert.equal(a.sessionId, b.sessionId);
 });
+
+test('接收端持久保存交接包，重启和同轮重投不丢失返工依据', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-receiver-'));
+  const store = new ReceiverStore(home, async () => ({ answer:'完成', exitCode:0 }));
+  const handoff = { version:1, id:request.id, attempt:1, previousReview:{summary:'补测试'}, sections:{'验收标准':'A1 文件存在'} };
+  const job = await store.accept({...request, handoff}); await store.active.get(job.key);
+  const restored = new ReceiverStore(home, () => { throw new Error('不能重放'); });
+  assert.deepEqual(restored.get(job.key).handoff, handoff);
+  await assert.rejects(restored.accept({...request, handoff:{...handoff,attempt:2}}), /内容不一致/);
+});
 test('同一任务轮次不能被不同内容替换', async () => {
   const store = new ReceiverStore(fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-receiver-')), async () => ({ answer: '完成' }));
   await store.accept(request);
