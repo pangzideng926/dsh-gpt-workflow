@@ -20,4 +20,4 @@ for (const name of ['plugin.json', 'mcp.json', '.codex-plugin', 'skills', 'READM
 console.log(`已构建独立插件：${target}`);
 await build({ absWorkingDir: root, entryPoints: ['src/receiver-plugin.mjs'], outfile: path.join(root, 'dsh-receiver/lib/index.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node22' });
 console.log('已构建 DSH 原生接收插件：dsh-receiver');
-fs.copyFileSync(path.join(root, 'src/receiver-panel.js'), path.join(root, 'dsh-receiver/lib/client.js'));
+await build({ absWorkingDir: root, entryPoints: ['src/receiver-panel.js'], outfile: path.join(root, 'dsh-receiver/lib/client.js'), bundle: true, platform: 'browser', format: 'iife', target: 'es2022', legalComments: 'eof' });

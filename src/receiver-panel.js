@@ -1,8 +1,10 @@
+import { renderMarkdown } from './receiver-markdown.mjs';
+
 // DSH 客户端模块入口：由宿主提供 React 和原生会话导航。
 window.__ModuleLoader__.load({
   id: 'dsh-gpt-receiver',
   factory: require => {
-    const { createElement: h, useState, useEffect } = require('react');
+    const { createElement: h, useState, useEffect, useMemo } = require('react');
     const labels = { accepted: '已接收', running: '开发中', completed: '待 GPT 审查', failed: '执行失败', interrupted: '需要核查', approved: '审查通过', needs_changes: '需要返工' };
     const status = job => job.review?.verdict || job.status;
     function Panel({ ctx }) {
@@ -33,6 +35,7 @@ window.__ModuleLoader__.load({
       };
       const current = job ? status(job) : '';
       const body = !job ? '' : tab === 'plan' ? job.plan || '历史任务未保存方案副本，请打开开发会话查看。' : tab === 'answer' ? job.answer || job.error || 'DSH 正在开发，完成后会在这里显示结果。' : job.review?.summary || '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。';
+      const renderedBody = useMemo(() => renderMarkdown(body), [body]);
       return h('div', { className: 'gwr-root' },
         h('button', { className: 'gwr-launcher', title: 'GPT 协作工作台', 'aria-label': 'GPT 协作工作台', onClick: () => setOpen(!open) }, 'GPT'),
         open && h('section', { className: 'gwr-panel', role: 'dialog', 'aria-label': 'GPT 协作工作台' },
@@ -44,7 +47,7 @@ window.__ModuleLoader__.load({
             h('p', { className: 'gwr-repo', title: job.repo }, job.repo),
             h('div', { className: 'gwr-steps', 'aria-label': '协作进度' }, ['GPT 方案', 'DSH 开发', 'GPT 审查'].map((text, index) => h('span', { key: text, className: (index === 0 || index === 1 && ['completed','approved','needs_changes'].includes(current) || index === 2 && !!job.review) ? 'done' : '' }, `${index + 1}  ${text}`))),
             h('nav', { className: 'gwr-tabs', 'aria-label': '任务详情' }, [['plan', '实施方案'], ['answer', '开发结果'], ['review', 'GPT 审查']].map(([key, title]) => h('button', { key, onClick: () => setTab(key), 'aria-pressed': tab === key, className: tab === key ? 'active' : '' }, title))),
-            h('pre', { className: 'gwr-detail' }, body),
+            h('div', { key: `${job.key}:${tab}`, className: 'gwr-detail gwr-markdown', dangerouslySetInnerHTML: { __html: renderedBody } }),
             job.permissionPreset && h('small', { className: 'gwr-permission' }, `完成时访问模式：${job.permissionPreset}`),
           ),
           h('footer', null, h('span', null, '仅由 GPT 提交审查结论'), h('span', null, updated ? `更新于 ${updated}` : '正在连接…')),
@@ -59,6 +62,19 @@ window.__ModuleLoader__.load({
 .gwr-panel header{padding:20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #8882}.gwr-panel strong{font-size:17px}.gwr-panel small{display:block;font-size:12px;opacity:.65;margin-top:6px}.gwr-panel button{font:inherit;color:inherit;cursor:pointer;border:1px solid #8883;background:transparent;border-radius:7px;padding:7px 11px}.gwr-panel header button{font-size:22px;padding:1px 8px;border:0}.gwr-content{padding:16px 20px;min-height:0;flex:1;display:flex;flex-direction:column}.gwr-label{font-size:12px;opacity:.85}.gwr-label select{display:block;width:100%;padding:9px;margin:6px 0 14px;background:var(--dsw-alias-bg-layer-2,#fff);color:inherit;border:1px solid #8884;border-radius:8px;font:inherit;font-size:13px}.gwr-job{display:flex;align-items:center;justify-content:space-between;gap:8px}.gwr-badge{padding:5px 9px;border-radius:6px;background:#f2b54420;color:#a36610;font-size:12px}.gwr-badge.running{background:#3b82f620;color:#3976da}.gwr-badge.approved{background:#10b98120;color:#159168}.gwr-badge.failed,.gwr-badge.interrupted,.gwr-badge.needs_changes{background:#ef444420;color:#c84242}.gwr-panel .gwr-primary{background:#236c5f;color:white;border:0;font-size:12px}.gwr-repo{font-size:11px;opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:10px 0 16px}.gwr-steps{display:flex;gap:8px;font-size:11px;margin-bottom:18px}.gwr-steps span{flex:1;padding:8px 3px;text-align:center;border-bottom:2px solid #8883;opacity:.55}.gwr-steps .done{border-color:#269781;opacity:1}.gwr-tabs{display:flex;border-bottom:1px solid #8883;gap:8px}.gwr-panel .gwr-tabs button{border:0;border-radius:0;font-size:12px;padding:8px 10px}.gwr-panel .gwr-tabs .active{border-bottom:2px solid #269781;font-weight:600}.gwr-detail{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.8 "Segoe UI","Microsoft YaHei",sans-serif;flex:1;overflow:auto;margin:0;padding:14px 0;min-height:100px}.gwr-panel footer{display:flex;justify-content:space-between;padding:12px 20px;border-top:1px solid #8882;font-size:10px;opacity:.6}.gwr-error{background:#ef444418;color:#c84242;margin:10px 20px;padding:10px;border-radius:6px;font-size:12px}.gwr-empty{padding:50px 30px;text-align:center;flex:1}.gwr-empty p{font-size:13px;line-height:1.8;opacity:.6}.gwr-panel button:hover{filter:brightness(.92)}
 .gwr-root{--gwr-surface:#ffffff;--gwr-text:#20252d;color:var(--gwr-text);color-scheme:light}
 .gwr-panel,.gwr-launcher,.gwr-label select{background:var(--gwr-surface);color:var(--gwr-text)}
+.gwr-markdown{white-space:normal;min-width:0;line-height:1.75}
+.gwr-markdown>:first-child{margin-top:0}.gwr-markdown>:last-child{margin-bottom:0}
+.gwr-markdown h1,.gwr-markdown h2,.gwr-markdown h3,.gwr-markdown h4,.gwr-markdown h5,.gwr-markdown h6{font-weight:650;line-height:1.45;margin:18px 0 10px}
+.gwr-markdown h1{font-size:20px}.gwr-markdown h2{font-size:17px;border-bottom:1px solid #8883;padding-bottom:6px}.gwr-markdown h3{font-size:15px}.gwr-markdown h4,.gwr-markdown h5,.gwr-markdown h6{font-size:13px}
+.gwr-markdown p{margin:9px 0}.gwr-markdown strong{font-size:inherit;font-weight:700}.gwr-markdown em{font-style:italic}.gwr-markdown s{ text-decoration:line-through }
+.gwr-markdown ul,.gwr-markdown ol{margin:9px 0;padding-left:24px}.gwr-markdown ul{list-style:disc}.gwr-markdown ol{list-style:decimal}.gwr-markdown li{margin:4px 0}.gwr-markdown li>p{margin:4px 0}
+.gwr-markdown blockquote{border-left:3px solid #269781;margin:12px 0;padding:2px 12px;background:#8881}
+.gwr-markdown code{font:12px/1.65 Consolas,"Cascadia Code",monospace;background:#8882;border-radius:4px;padding:2px 4px}
+.gwr-markdown pre{max-width:100%;overflow-x:auto;white-space:pre;overflow-wrap:normal;margin:12px 0;padding:12px;border:1px solid #8883;border-radius:8px;background:#8881}
+.gwr-markdown pre code{padding:0;border:0;background:none;white-space:pre;overflow-wrap:normal;font:12px/1.65 Consolas,"Cascadia Code",monospace;color:inherit}
+.gwr-table-scroll{max-width:100%;overflow-x:auto;margin:12px 0}.gwr-markdown table{width:100%;border-collapse:collapse;font-size:12px}.gwr-markdown th,.gwr-markdown td{border:1px solid #8884;padding:7px 10px;text-align:left;min-width:70px}.gwr-markdown th{background:#8882;font-weight:650}.gwr-markdown tr:nth-child(even){background:#8881}
+.gwr-markdown a{color:#218573;text-decoration:underline;overflow-wrap:anywhere}.gwr-markdown hr{border:0;border-top:1px solid #8884;margin:16px 0}
+@media(prefers-color-scheme:dark){.gwr-markdown a{color:#64d8af}}
 @media(prefers-color-scheme:dark){.gwr-root{--gwr-surface:#24272d;--gwr-text:#edf0f5;color-scheme:dark}.gwr-badge{color:#e7b657}.gwr-badge.approved{color:#64d8af}.gwr-badge.running{color:#88b7ff}.gwr-badge.failed,.gwr-badge.interrupted,.gwr-badge.needs_changes,.gwr-error{color:#ff9c9c}}
 `;
     return { name: 'gpt-workflow-receiver', inject: ['slots', 'sessions'], apply(ctx) {
