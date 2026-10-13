@@ -122,3 +122,33 @@ test('归档先分组再分页，较新历史不挤掉活跃任务且旧归档�
     const last=await send({view:'archived',offset:100});assert.equal(last.jobs.length,1);assert.equal(last.hasMore,false);
   }finally{await new Promise(r=>server.close(r));}
 });
+
+test('缺少 PID 或 interrupted 的异常任务可清理重做与移入回收站，运行中进程仍拒绝清理',async()=>{
+  const f=fixture(),item=await failed(f);
+  const task=f.workflow.load((await f.workflow.create({repo:f.repo,title:'卡死开发',plan})).id);
+  task.status='running';task.attempt=1;f.workflow.save(task);
+  fs.writeFileSync(f.workflow.lockPath(f.repo),JSON.stringify({id:task.id,home:f.workflow.home}),{mode:0o600});
+  const storeHome=path.join(f.home,'store');fs.mkdirSync(storeHome,{recursive:true});
+  const jobFile=path.join(storeHome,`${task.id}-1.json`);
+  fs.writeFileSync(jobFile,JSON.stringify({key:`${task.id}-1`,status:'interrupted',title:'卡死开发',repo:f.repo,createdAt:'2026-10-13T00:00:00.000Z'}));
+  f.store.home=storeHome;f.store.list=()=>fs.readdirSync(storeHome).filter(n=>n.endsWith('.json')).map(n=>JSON.parse(fs.readFileSync(path.join(storeHome,n),'utf8')));
+  f.store.file=k=>path.join(storeHome,`${k}.json`);
+  f.requests.save({...item,status:'interrupted',gptSessionState:'owned',gptPid:process.pid,taskId:task.id});
+  for(const action of ['reprocess','remove'])await assert.rejects(f.run(item.key,action),/运行/);
+  f.requests.save({...f.requests.get(item.id),gptPid:undefined});
+  let replanned=0;
+  f.requests.plan=async(_item,update)=>{replanned++;update({gptSessionState:'released'});return {status:'needs_input',questions:'重新规划成功'};};
+  const reprocessed=await f.run(`${task.id}-1`,'reprocess');
+  assert.equal(reprocessed.focusKey,item.key);
+  await f.requests.active.get(item.id);
+  assert.equal(replanned,1);
+  assert.equal(f.requests.get(item.id).status,'needs_input');
+  assert.equal(fs.existsSync(f.workflow.lockPath(f.repo)),false);
+  assert.equal(fs.existsSync(jobFile),false);
+  assert.ok(fs.readdirSync(path.join(storeHome,'trash')).length>=1);
+  assert.ok(fs.readdirSync(path.join(f.workflow.home,'trash')).length>=1);
+  await f.run(item.key,'remove');
+  assert.equal(f.requests.list().length,0);
+  assert.ok(fs.readdirSync(path.join(f.requests.home,'trash')).length>=2);
+});
+
