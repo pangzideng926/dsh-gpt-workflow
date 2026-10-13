@@ -16,7 +16,10 @@ window.__ModuleLoader__.load({
       const current = status(job);
       return h('div', { className: 'gwr-steps', 'aria-label': '协作进度' }, ['GPT 方案', 'DSH 开发', 'GPT 审查'].map((text, index) => h('span', { key: text, className: (index === 0 && !!job.plan || index === 1 && ['completed','approved','needs_changes'].includes(current) || index === 2 && !!job.review) ? 'done' : '' }, `${index + 1}  ${text}`)));
     }
-    function Details({ job, error, actionBusy, notice, onAction, onClose, onOpenSession, onOpenGpt, onReuse }) {
+    function ActionFeedback({feedback}) {
+      return feedback && h('div', {className:'gwr-feedback '+feedback.kind,role:feedback.kind==='error' ? 'alert' : 'status','aria-live':feedback.kind==='error' ? 'assertive' : 'polite'}, feedback.text);
+    }
+    function Details({ job, error, actionBusy, feedback, onAction, onClose, onOpenSession, onOpenGpt, onReuse }) {
       const dialog = useRef(null);
       const [tab, setTab] = useState('handoff');
       const [copied, setCopied] = useState('');
@@ -27,6 +30,7 @@ window.__ModuleLoader__.load({
       const gptBusy = job.status === 'planning' || ['starting','owned','release_failed'].includes(job.gptSessionState);
       return h('section', { ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': false, className: 'gwr-panel gwr-modal', 'aria-label': `任务详情：${job.title}`, onKeyDown: e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } } },
         h('header', null, h('div', { className: 'gwr-heading' }, h('strong', null, job.title), h('small', null, `${round(job)} · 任务详情`)), h('button', { onClick: onClose, 'aria-label': '关闭任务详情' }, '×')),
+        h(ActionFeedback, {feedback}),
         error && h('p', { className: 'gwr-error', role: 'alert' }, error),
         h('div', { className: 'gwr-content' },
           h('div', { className: 'gwr-job' }, h('span', { className: `gwr-badge ${current}` }, labels[current] || current), h('div', {className:'gwr-actions'}, job.gptThreadId && h('button', {className:'gwr-primary',onClick:onOpenGpt,disabled:gptBusy,title:gptBusy ? '规划进程占用会话，请在面板查看进展，释放后再打开' : undefined}, gptBusy ? 'GPT 会话占用中' : '打开 GPT 会话'), job.sessionId && h('button', { onClick: onOpenSession }, '打开开发会话'))),
@@ -34,7 +38,6 @@ window.__ModuleLoader__.load({
           job.source?.provider === 'zentao' && h('p', {className:'gwr-source'}, h('a', {href:job.source.url,target:'_blank',rel:'noreferrer'}, `${sourceLabel(job.source)} · ${job.source.title}`)),
           h('div', { className: 'gwr-actions' }, job.requirement && h('button', { onClick: onReuse }, '复用需求新建'), job.sessionId && current === 'completed' && h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`请使用 dsh-gpt-workflow 审查任务 ${job.key.replace(/-\d+$/, '')}，仓库 ${job.repo}。先读取 workflow_result 中的 diff、新文件和测试证据，再提交 GPT 审查结论。`); const opened = job.gptThreadId ? await onOpenGpt() : false; setCopied(opened ? '已复制并打开原 GPT 会话，粘贴发送即可审查' : '已复制，粘贴到 Codex 即可审查'); } catch { setCopied('复制失败，请在 Codex 中按任务名称继续审查'); } } }, job.gptThreadId ? '复制审查指令并打开 GPT' : '复制 GPT 审查指令')),
           h('div', {className:'gwr-actions'}, (job.availableActions || []).map(action => h('button', {key:action,disabled:actionBusy,onClick:()=>onAction(action)}, ({recover:'异常恢复',retry:'重试',archive:'归档',restore:'恢复显示'})[action]))),
-          notice && h('small', {role:'status'}, notice),
           job.actionError && h('small', null, job.actionError),
           job.history?.length>0 && h('details', null, h('summary',null, '历史规划记录'), job.history.map((old,index)=>h('p',{key:index}, '第 '+(old.generation||1)+' 次：'+(old.error || labels[old.status] || old.status)))),
           copied && h('small', { role: 'status' }, copied),
@@ -55,7 +58,7 @@ window.__ModuleLoader__.load({
       const [creating, setCreating] = useState(false), [workspace, setWorkspace] = useState(''), [requirement, setRequirement] = useState(''), [submitting, setSubmitting] = useState(false), [formError, setFormError] = useState(''), [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [loading, setLoading] = useState(true);
       const submission = useRef(null), busySubmit = useRef(false);
       const [linkedRequest, setLinkedRequest] = useState('');
-      const [actionBusy,setActionBusy]=useState(false), [notice,setNotice]=useState(''), [refreshTick,setRefreshTick]=useState(0);
+      const [actionBusy,setActionBusy]=useState(false), [actionFeedback,setActionFeedback]=useState(null), [refreshTick,setRefreshTick]=useState(0);
       const actionLock=useRef(false);
       const [page,setPage]=useState(0), [hasMore,setHasMore]=useState(false);
       useEffect(() => {
@@ -118,12 +121,12 @@ window.__ModuleLoader__.load({
       const job = jobs.find(j => j.key === selected);
       const onAction = async action => {
         if (actionLock.current || !job) return;
-        actionLock.current=true;setActionBusy(true);setError('');setNotice('');
+        actionLock.current=true;setActionBusy(true);setError('');setActionFeedback({key:job.key,kind:'pending',text:'正在'+({recover:'核对异常状态',retry:'提交重试',archive:'归档',restore:'恢复显示'})[action]+'…'});
         try {
           const response=await fetch('/gpt-workflow-view/actions',{method:'POST',headers:{'X-GPT-Workflow-View':'1','Content-Type':'application/json'},body:JSON.stringify({key:job.key,action,version:job.actionVersion}),signal:AbortSignal.timeout(45000)});
           const data=await response.json();if(!response.ok)throw new Error(data.error || '操作失败');
-          setNotice(data.notice);setPage(0);if(action==='archive')setFilter('archived');if(action==='restore')setFilter('all');
-        } catch(error) {setError(error.message+'；请刷新查看状态，不会自动重复提交。');}
+          setActionFeedback({key:job.key,kind:'success',text:data.notice});setPage(0);if(action==='archive')setFilter('archived');if(action==='restore')setFilter('all');
+        } catch(error) {setActionFeedback({key:job.key,kind:'error',text:error.message+'；请核对任务状态，不会自动重复提交。'});}
         finally {actionLock.current=false;setActionBusy(false);setRefreshTick(value=>value+1);}
       };
       const openGpt = async () => {
@@ -149,7 +152,7 @@ window.__ModuleLoader__.load({
           linkedRequest && h('button', {onClick:()=>{setLinkedRequest('');select('');}}, '返回全部任务'),
           error && h('p', { className: 'gwr-error', role: 'alert' }, error),
           h('div', { className: 'gwr-toolbar' }, h('input', { type: 'search', placeholder: '搜索任务或仓库', 'aria-label': '搜索任务或仓库', value: query, onChange: e => setQuery(e.target.value) }), h('nav', { className: 'gwr-filters', 'aria-label': '任务筛选' }, [['all','全部'],['active','进行中'],['review','待审查'],['archived','已归档']].map(([key, title]) => h('button', { key, 'aria-pressed': filter === key, onClick: () => {setFilter(key);setPage(0);} }, title)))),
-          notice && h('p',{className:'gwr-hint',role:'status'},notice),
+          h(ActionFeedback, {feedback:actionFeedback}),
           hasMore && !linkedRequest && h('button',{onClick:()=>setPage(value=>value+1)},'加载更多任务'),
           !visible.length ? h('div', { className: 'gwr-empty' }, loading ? '正在加载任务…' : jobs.length ? '没有匹配任务' : '点击「新建」填写需求，交给 GPT 规划') : h('div', { className: 'gwr-task-list' }, visible.map(j => h('button', { key: j.key, className: 'gwr-task-card', onClick: () => { setCreating(false); select(j.key); }, 'aria-label': `查看任务：${j.title}，${round(j)}，${labels[status(j)] || status(j)}` },
             h('span', { className: 'gwr-task-title' }, j.title),
@@ -158,7 +161,7 @@ window.__ModuleLoader__.load({
             h(Steps, { job: j }),
           ))),
         ),
-        open && job && h(Details, { key: job.key, job, error, actionBusy, notice, onAction, onClose: () => select(''), onOpenSession: openSession, onOpenGpt:openGpt, onReuse: () => { setWorkspace(job.workspace || job.repo); setRequirement(job.requirement); setFormError(''); select(''); setCreating(true); } }),
+        open && job && h(Details, { key: job.key, job, error, actionBusy, feedback:actionFeedback?.key===job.key ? actionFeedback : null, onAction, onClose: () => select(''), onOpenSession: openSession, onOpenGpt:openGpt, onReuse: () => { setWorkspace(job.workspace || job.repo); setRequirement(job.requirement); setFormError(''); select(''); setCreating(true); } }),
         open && creating && h('section', { className: 'gwr-panel gwr-create', role: 'dialog', 'aria-modal': false, 'aria-label': '新建 GPT 开发任务', onKeyDown: e => { if (e.key === 'Escape' && !submitting) { e.stopPropagation(); setCreating(false); } } },
           h('header', null, h('strong', null, '新建 GPT 开发任务'), h('button', { onClick: () => setCreating(false), 'aria-label': '关闭新建任务' }, '×')),
           h('form', { className: 'gwr-form', onSubmit: submit },
@@ -182,7 +185,10 @@ window.__ModuleLoader__.load({
 .gwr-panel,.gwr-launcher,.gwr-label select{background:var(--gwr-surface);color:var(--gwr-text)}
 .gwr-compact{width:360px;height:720px;max-height:calc(100vh - 110px)}.gwr-compact>header,.gwr-compact>.gwr-toolbar,.gwr-compact>.gwr-error{flex-shrink:0}.gwr-compact header{padding:14px 16px}.gwr-compact header strong{font-size:15px}
 .gwr-task-list{overflow:auto;padding:12px;min-height:0;flex:1;overscroll-behavior:contain;scrollbar-gutter:stable}.gwr-panel .gwr-task-card{display:block;width:100%;text-align:left;padding:14px;margin-bottom:10px;border-radius:10px}.gwr-task-card:last-child{margin-bottom:0}.gwr-task-card:hover{background:#8881}.gwr-task-title{display:block;font-size:14px;font-weight:650;overflow-wrap:anywhere}.gwr-task-meta{display:flex;align-items:center;justify-content:space-between;margin:10px 0;font-size:11px;gap:8px}.gwr-task-card .gwr-steps{margin:0;gap:6px;font-size:10px}.gwr-task-card .gwr-steps span{padding:5px 0}
-.gwr-modal{position:fixed;inset:0;margin:auto;padding:0;width:min(1100px,calc(100vw - 64px));height:min(820px,calc(100vh - 64px));max-width:none;max-height:none;color:var(--gwr-text);box-sizing:border-box}.gwr-modal::backdrop{background:#11182780}.gwr-modal .gwr-heading{min-width:0;padding-right:16px}.gwr-modal header strong{display:block;overflow-wrap:anywhere}.gwr-modal header button{flex-shrink:0}.gwr-modal .gwr-content{padding:16px 28px}.gwr-modal .gwr-repo{white-space:normal;overflow-wrap:anywhere;margin:10px 0}.gwr-modal .gwr-steps{margin-bottom:10px}.gwr-modal .gwr-detail{font-size:14px;padding:20px 4px}.gwr-modal .gwr-tabs button{font-size:14px}.gwr-root button:focus-visible{outline:2px solid #269781;outline-offset:2px}
+.gwr-modal{position:fixed;inset:0;margin:auto;padding:0;width:min(1100px,calc(100vw - 64px));height:min(820px,calc(100vh - 64px));max-width:none;max-height:none;color:var(--gwr-text);box-sizing:border-box}.gwr-modal::backdrop{background:#11182780}
+.gwr-modal>header,.gwr-modal>footer,.gwr-modal>.gwr-error{flex-shrink:0}.gwr-modal>.gwr-error{max-height:25vh;overflow:auto;overflow-wrap:anywhere}
+.gwr-panel .gwr-feedback{flex-shrink:0;max-height:25vh;overflow:auto;overflow-wrap:anywhere;white-space:pre-wrap;margin:10px 20px;padding:12px;border:1px solid #26978155;border-radius:8px;background:var(--gwr-surface);color:var(--gwr-text);font-size:13px;line-height:1.6}.gwr-panel .gwr-feedback.error{border-color:#c84242;color:#c84242}.gwr-panel .gwr-feedback.pending{border-color:#3976da}.gwr-panel .gwr-feedback.success{border-color:#159168}
+.gwr-modal .gwr-heading{min-width:0;padding-right:16px}.gwr-modal header strong{display:block;overflow-wrap:anywhere}.gwr-modal header button{flex-shrink:0}.gwr-modal .gwr-content{padding:16px 28px}.gwr-modal .gwr-repo{white-space:normal;overflow-wrap:anywhere;margin:10px 0}.gwr-modal .gwr-steps{margin-bottom:10px}.gwr-modal .gwr-detail{font-size:14px;padding:20px 4px}.gwr-modal .gwr-tabs button{font-size:14px}.gwr-root button:focus-visible{outline:2px solid #269781;outline-offset:2px}
 @media(max-width:600px){.gwr-modal{width:calc(100vw - 24px);height:calc(100vh - 40px)}.gwr-modal .gwr-content{padding:12px 16px}.gwr-modal header{padding:16px}}
 .gwr-root *{box-sizing:border-box}.gwr-root .gwr-modal{top:24px;bottom:90px;height:auto;max-height:820px;outline:none}.gwr-modal::backdrop{background:none}
 .gwr-actions{display:flex;align-items:center;gap:6px}.gwr-panel header .gwr-primary{font-size:12px;padding:7px 10px;border-radius:7px}.gwr-toolbar{padding:12px 12px 0}.gwr-toolbar input,.gwr-form input,.gwr-form textarea{width:100%;border:1px solid #8885;background:var(--gwr-surface);color:var(--gwr-text);border-radius:7px;padding:9px;font:inherit;font-size:13px}.gwr-filters{display:flex;gap:6px;margin-top:8px}.gwr-filters button{flex:1;font-size:12px}.gwr-filters button[aria-pressed=true]{background:#26978120;border-color:#269781}.gwr-task-meta>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.gwr-badge{flex-shrink:0}.gwr-compact .gwr-empty{padding:24px;font-size:13px;line-height:1.7;display:flex;align-items:center;justify-content:center;min-height:0;overflow:auto}
