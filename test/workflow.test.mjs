@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,15 +79,22 @@ test('返工冻结每轮交接，修订待启动时不混入上一轮方案', as
   assert.equal(second.packet.previousReview.evidenceHash, result.evidenceHash);
   assert.equal(second.packet.previousRunDir, path.dirname(first.packetPath));
 });
-test('拒绝接管已有未提交改动的仓库', async () => {
+test('允许接管已有未提交改动与未跟踪子仓库目录的仓库并冻结基线', async () => {
   const { workflow, repo } = await setup();
   await writeFile(path.join(repo, 'user.txt'), '用户内容');
-  await assert.rejects(workflow.create({ repo, title: '示例', plan }), /未提交/);
+  await mkdir(path.join(repo, 'mesweb', 'MES_NEW', '.git'), { recursive: true });
+  await writeFile(path.join(repo, 'mesweb', 'MES_NEW', '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  const task = await workflow.create({ repo, title: '示例', plan });
+  assert.equal(task.status, 'planned');
+  await workflow.start(task.id);
+  assert.equal((await completed(workflow, task.id)).status, 'awaiting_review');
+  assert.equal(await readFile(path.join(repo, 'user.txt'), 'utf8'), '用户内容');
 });
 test('计划生成后代码变动，启动时拒绝旧基线', async () => {
   const { workflow, repo } = await setup();
+  await writeFile(path.join(repo, 'user.txt'), '初始未提交内容');
   const task = await workflow.create({ repo, title: '示例', plan });
-  await writeFile(path.join(repo, 'README.md'), '他人的编辑');
+  await writeFile(path.join(repo, 'user.txt'), '他人的后续编辑');
   await assert.rejects(workflow.start(task.id), /基线/);
 });
 test('仓库独占锁阻止重复任务，运行中不能审查', async () => {

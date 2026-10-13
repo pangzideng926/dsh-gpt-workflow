@@ -28,6 +28,7 @@ export function snapshot(repo) {
   const files = untracked.map(name => {
     const file = path.join(repo, name);
     const st = fs.lstatSync(file);
+    if (st.isDirectory()) return { path: name, bytes: 0, sha256: 'directory' };
     if (!st.isFile()) throw new Error(`不支持未跟踪的链接或特殊文件：${name}`);
     return { path: name, bytes: st.size, sha256: hash(fs.readFileSync(file)) };
   });
@@ -105,7 +106,6 @@ export class Workflow {
     if (path.relative(repo, root) !== '') throw new Error('repo 必须是具体 Git 仓库根目录');
     repo = root;
     const baseline = snapshot(repo);
-    if (baseline.status) throw new Error('仓库存在未提交改动；请先由原任务完成收尾，或使用独立且干净的工作树');
     const id = randomUUID();
     fs.mkdirSync(this.dir(id));
     const planPath = path.join(this.dir(id), '实施方案.md');

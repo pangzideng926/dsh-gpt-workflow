@@ -68,7 +68,7 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
         result=parsed;
         const feedback=result.status==='needs_input'
           ? '已接收待补充问题；不会派发 DSH。请在最终 Markdown 回复中逐项列出问题。'
-          : locating ? '仓库定位结果已接收。尚未生成方案或派发 DSH；接下来外围程序将检查仓库是否干净、是否被占用，通过后才进入实施方案阶段。请在最终 Markdown 中说明这一步，暂停原因可在 DSH 面板任务详情查看。'
+          : locating ? '仓库定位结果已接收。尚未生成方案或派发 DSH；接下来外围程序将检查仓库是否被占用并冻结当前代码基线（保留既有未提交改动），通过后才进入实施方案阶段。请在最终 Markdown 中说明这一步，暂停原因可在 DSH 面板任务详情查看。'
           : '实施方案已接收。请在最终 Markdown 中展示方案，并说明仍待外围程序校验代码基线后派发；当前不能声称 DSH 已开始。';
         resultFeedback=preflight || feedback;
         return {success:true,contentItems:[{type:'inputText',text:resultFeedback}]};

@@ -145,7 +145,7 @@ export class TaskActions {
           if (!t.request.workspace && t.request.repo) {
             const lock = this.workflow.lockPath(t.request.repo);
             if (fs.existsSync(lock) && !t.tasks.some(task => task.id === JSON.parse(fs.readFileSync(lock, 'utf8')).id)) throw new Error('该仓库已被其他任务锁定');
-            if (snapshot(t.request.repo).status) throw new Error('仓库有未提交改动，请先完成原任务或选择干净工作树');
+            snapshot(t.request.repo);
           }
           this.trashTarget(t);
           const restarted = await this.requests.accept({

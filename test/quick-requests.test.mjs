@@ -35,11 +35,14 @@ test('信息不足不创建开发任务，规划失败不能伪装派发成功',
   const b = await f.requests.accept({ ...f.input, id:randomUUID() }); await f.requests.active.get(b.id);
   assert.equal(f.requests.get(b.id).status,'failed'); assert.equal(f.starts(),0);
 });
-test('有改动的仓库拒绝提交；规划期间基线改变不启动开发', async () => {
-  const f = fixture(async () => { fs.writeFileSync(path.join(f.repo,'README.md'),'changed'); return {status:'ready', title:'文档', plan}; });
-  const a = await f.requests.accept(f.input); await f.requests.active.get(a.id);
-  assert.match(f.requests.get(a.id).error,/代码发生变化/); assert.equal(f.starts(),0);
-  await assert.rejects(f.requests.accept({ ...f.input, id:randomUUID() }),/未提交改动/);
+test('允许既有未提交改动的仓库规划派发；规划期间基线改变不启动开发', async () => {
+  const f = fixture(async () => ({ status: 'ready', title: '文档', plan }));
+  fs.writeFileSync(path.join(f.repo, 'README.md'), 'existing dirty');
+  const ok = await f.requests.accept(f.input); await f.requests.active.get(ok.id);
+  assert.equal(f.requests.get(ok.id).status, 'dispatched'); assert.equal(f.starts(), 1);
+  f.requests.plan = async () => { fs.writeFileSync(path.join(f.repo, 'README.md'), 'changed during plan'); return { status: 'ready', title: '文档', plan }; };
+  const a = await f.requests.accept({ ...f.input, id: randomUUID(), requirement: '规划期变化' }); await f.requests.active.get(a.id);
+  assert.match(f.requests.get(a.id).error, /代码发生变化/); assert.equal(f.starts(), 1);
 });
 test('同仓库规划互斥，重启后中断请求不重放', async () => {
   const f = fixture(() => new Promise(() => {}));

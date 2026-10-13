@@ -48,18 +48,22 @@ test('无法确定仓库时保留待补充，拒绝工作区外和工作区根�
   }
   assert.equal(f.starts.length,0);
 });
-test('只检查自动识别的仓库；任一目标脏或规划期间变化均不派发',async()=>{
-  const f=fixture(); fs.writeFileSync(path.join(f.repos[1],'README.md'),'unrelated','utf8');
+test('允许自动识别的目标仓库存在既有未提交改动；规划期间变化仍不派发',async()=>{
+  const f=fixture();
+  fs.writeFileSync(path.join(f.repos[0],'README.md'),'existing dirty 0','utf8');
+  fs.writeFileSync(path.join(f.repos[1],'README.md'),'existing dirty 1','utf8');
+  f.requests.plan=async request=>request.stage==='locate'
+    ? {status:'ready',repos:f.repos,reason:'双仓'}
+    : {status:'ready',tasks:request.repos.map(repo=>({repo,title:'文档',plan}))};
   assert.equal((await finish(f)).status,'dispatched');
+  assert.equal(f.starts.length,2);
   f.requests.plan=async request=>{
     if(request.stage==='locate')return {status:'ready',repos:[f.repos[0]]};
-    fs.writeFileSync(path.join(f.repos[0],'README.md'),'changed','utf8');
+    fs.writeFileSync(path.join(f.repos[0],'README.md'),'changed during plan','utf8');
     return {status:'ready',tasks:[{repo:f.repos[0],title:'文档',plan}]};
   };
   assert.match((await finish(f,{...f.input,id:randomUUID()})).error,/规划期间代码发生变化/);
-  assert.equal(f.starts.length,1);
-  f.requests.plan=async()=>({status:'ready',repos:f.repos});
-  assert.match((await finish(f,{...f.input,id:randomUUID()})).error,/未提交改动/);
+  assert.equal(f.starts.length,2);
 });
 test('规划不能偷偷增加仓库，部分启动失败保留所有任务且不会重放',async()=>{
   const f=fixture(); f.requests.plan=async request=>request.stage==='locate' ? {status:'ready',repos:[f.repos[0]]} : {status:'ready',tasks:f.repos.map(repo=>({repo,title:'文档',plan}))};
@@ -75,17 +79,19 @@ test('默认工作区仅取当前主面板所属项，不猜测最近工作区',
   assert.equal(currentDshWorkspace({byId:{two:{id:'two'}}},workspaces),undefined);
 });
 
-test('仓库脏时在 GPT 最终回复之前提供暂停原因，仍不规划或派发',async()=>{
-  const f=fixture(); fs.writeFileSync(path.join(f.repos[0],'README.md'),'existing change','utf8');
+test('定位阶段更新目标仓库，仓库被占用时在 GPT 最终回复之前提供暂停原因',async()=>{
+  const f=fixture();
+  fs.writeFileSync(f.workflow.lockPath(f.repos[0]),JSON.stringify({id:randomUUID()}),'utf8');
   let inspected=false;
   f.requests.plan=async (request,update,inspect)=>{
     assert.equal(request.stage,'locate');
     const located={status:'ready',repos:[f.repos[0]],reason:'代码依据'};
     assert.equal(typeof inspect,'function');
-    assert.throws(()=>inspect(located),/未提交改动/);
+    assert.throws(()=>inspect(located),/已有开发\/审查任务/);
     inspected=true; return located;
   };
-  const item=await finish(f);
-  assert.equal(inspected,true); assert.match(item.error,/未提交改动/);
+  const item=await finish(f), realRepo=fs.realpathSync.native(f.repos[0]);
+  assert.equal(inspected,true); assert.match(item.error,/已有开发\/审查任务/);
+  assert.equal(item.repo,realRepo); assert.deepEqual(item.repos,[realRepo]);
   assert.equal(item.status,'failed'); assert.equal(f.starts.length,0);
 });

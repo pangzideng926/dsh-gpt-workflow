@@ -136,6 +136,7 @@ test('缺少 PID 或 interrupted 的异常任务可清理重做与移入回收�
   f.requests.save({...item,status:'interrupted',gptSessionState:'owned',gptPid:process.pid,taskId:task.id});
   for(const action of ['reprocess','remove'])await assert.rejects(f.run(item.key,action),/运行/);
   f.requests.save({...f.requests.get(item.id),gptPid:undefined});
+  fs.writeFileSync(path.join(f.repo,'local-edit.txt'),'keep');
   let replanned=0;
   f.requests.plan=async(_item,update)=>{replanned++;update({gptSessionState:'released'});return {status:'needs_input',questions:'重新规划成功'};};
   const reprocessed=await f.run(`${task.id}-1`,'reprocess');

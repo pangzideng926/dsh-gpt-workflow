@@ -78,7 +78,6 @@ export class QuickRequests {
     if (this.list().some(j => j.id!==retry?.id && !j.archivedAt && j.repo === repo && ['planning', 'dispatching', 'interrupted'].includes(j.status))) throw new Error('该仓库已有规划或待核查请求，请先处理原任务');
     if (fs.existsSync(this.workflow.lockPath(repo))) throw new Error('该仓库已有开发/审查任务，请先完成原任务');
     const baseline = snapshot(repo);
-    if (baseline.status) throw new Error('仓库有未提交改动，请先完成原任务或选择干净工作树');
     const item = { ...retry, id: input.id, key: `request:${input.id}`, title: requirement.split('\n')[0].slice(0, 80), repo, requirement, digest, status: 'planning', createdAt: retry?.createdAt || new Date().toISOString() };
     this.save(item);
     const work = Promise.resolve().then(async () => {
@@ -127,9 +126,11 @@ export class QuickRequests {
             if (!Array.isArray(located.repos) || !located.repos.length || located.repos.length>8) throw new Error('GPT 未返回明确的执行仓库范围（最多 8 个）');
             const targets=located.repos.map(repo=>resolveTarget(workspace,repo));
             if (new Set(targets).size!==targets.length) throw new Error('GPT 返回了重复仓库');
+            item.repos=targets; item.repo=targets.length===1 ? targets[0] : workspace; item.scopeReason=located.reason;
+            this.save(item);
             for (const repo of targets) {
               checkAvailable(repo);
-              if (snapshot(repo).status) throw new Error(`仓库有未提交改动：${repo}，请先完成原任务或使用干净工作树`);
+              snapshot(repo);
             }
           } catch(error) { scopeError=error; throw error; }
         };
@@ -145,7 +146,6 @@ export class QuickRequests {
         const baselines = new Map();
         for (const repo of repos) {
           checkAvailable(repo); const baseline=snapshot(repo);
-          if (baseline.status) throw new Error(`仓库有未提交改动：${repo}，请先完成原任务或使用干净工作树`);
           baselines.set(repo,baseline);
         }
         const result = await this.plan(item, update);
