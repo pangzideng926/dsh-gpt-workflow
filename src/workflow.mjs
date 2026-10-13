@@ -152,6 +152,7 @@ export class Workflow {
     };
   }
   async start(id) {
+    if (this.load(id).archivedAt) throw new Error('任务已归档，请先恢复显示');
     const desktop = !this.command && !process.env.DSH_WORKFLOW_BIN;
     if (desktop) {
       const health = await receiverRequest('/health');
@@ -159,6 +160,7 @@ export class Workflow {
     }
     return this.operation(id, task => {
       if (task.status !== 'planned') throw new Error(`状态 ${task.status} 不能启动开发`);
+      if (task.archivedAt) throw new Error('任务已归档，请先恢复显示');
       const lock = this.lockPath(task.repo);
       if (fs.existsSync(lock)) throw new Error('仓库已被另一个任务锁定，须先完成或恢复该任务');
       if (snapshot(task.repo).fingerprint !== task.baseline.fingerprint) throw new Error('代码基线已变化，请重新分析并创建任务');
@@ -240,6 +242,24 @@ export class Workflow {
       fs.writeFileSync(task.planPath, plan, { mode: 0o600 });
       task.planHash = hash(plan); task.baseline = baseline; task.status = 'planned';
       this.save(task); return this.publicTask(task);
+    });
+  }
+  checkRetry(id) {
+    const task=this.load(id);
+    if (task.archivedAt || !['failed','planned'].includes(task.status)) throw new Error('仅未归档的失败或未启动任务可重试');
+    if (alive(task.workerPid) || alive(task.developerPid)) throw new Error('原执行进程仍在运行');
+    if (fs.existsSync(this.lockPath(task.repo))) throw new Error('仓库仍被锁定，先恢复中断任务');
+    const evidenceFile=task.runDir && path.join(task.runDir,'evidence.json');
+    const baseline=task.status==='failed' && evidenceFile && fs.existsSync(evidenceFile) ? readJson(evidenceFile).snapshot : task.baseline;
+    if (baseline.head!==task.baseline.head || baseline.branch!==task.baseline.branch) throw new Error('DSH 改变了提交或分支，须 GPT 人工核查，不能直接重试');
+    if (snapshot(task.repo).fingerprint!==baseline.fingerprint) throw new Error('代码基线已变化，不能直接重试，请交回 GPT 核查');
+    if (hash(fs.readFileSync(task.planPath))!==task.planHash) throw new Error('原方案已变化，请先由 GPT 修订');
+    return baseline;
+  }
+  async prepareRetry(id) {
+    return this.operation(id,task=>{
+      const baseline=this.checkRetry(id);
+      task.baseline=baseline;task.status='planned';this.save(task);return this.publicTask(task);
     });
   }
   async recover(id) {

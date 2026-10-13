@@ -7,16 +7,16 @@ window.__ModuleLoader__.load({
   id: 'dsh-gpt-receiver',
   factory: require => {
     const { createElement: h, useState, useEffect, useMemo, useRef } = require('react');
-    const labels = { planning: 'GPT 规划中', needs_input: '待补充需求', dispatching: '正在派发', dispatched: '已派发 DSH', accepted: '已接收', running: '开发中', completed: '待 GPT 审查', failed: '执行失败', interrupted: '需要核查', approved: '审查通过', needs_changes: '需要返工' };
+    const labels = { archived:'已归档', planning: 'GPT 规划中', needs_input: '待补充需求', dispatching: '正在派发', dispatched: '已派发 DSH', accepted: '已接收', running: '开发中', completed: '待 GPT 审查', failed: '执行失败', interrupted: '需要核查', approved: '审查通过', needs_changes: '需要返工' };
     const sourceLabel = source => `禅道${({task:'任务',bug:'Bug',story:'需求'})[source.kind] || ''} #${source.id}`;
-    const status = job => job.review?.verdict || job.status;
+    const status = job => job.archivedAt ? 'archived' : job.review?.verdict || job.status;
     const round = job => job.key.startsWith('request:') ? (job.source ? '禅道关联' : '新需求') : `第 ${job.key.split('-').at(-1)} 轮`;
     const active = job => ['planning', 'dispatching', 'dispatched', 'accepted', 'running'].includes(status(job));
     function Steps({ job }) {
       const current = status(job);
       return h('div', { className: 'gwr-steps', 'aria-label': '协作进度' }, ['GPT 方案', 'DSH 开发', 'GPT 审查'].map((text, index) => h('span', { key: text, className: (index === 0 && !!job.plan || index === 1 && ['completed','approved','needs_changes'].includes(current) || index === 2 && !!job.review) ? 'done' : '' }, `${index + 1}  ${text}`)));
     }
-    function Details({ job, error, onClose, onOpenSession, onOpenGpt, onReuse }) {
+    function Details({ job, error, actionBusy, notice, onAction, onClose, onOpenSession, onOpenGpt, onReuse }) {
       const dialog = useRef(null);
       const [tab, setTab] = useState('handoff');
       const [copied, setCopied] = useState('');
@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
       const body = tab === 'handoff' ? renderHandoff(job) : tab === 'plan' ? job.plan || (job.requirement ? `## 当前状态\n${job.error || labels[status(job)]}\n\n${job.scopeReason ? `## 仓库定位依据\n${job.scopeReason}\n\n` : ''}## 用户需求\n${job.requirement}` : '历史任务未保存方案副本，请打开开发会话查看。') : tab === 'answer' ? job.answer || job.error || '开发完成后会在这里显示结果。' : job.review?.summary || (job.source && job.key.startsWith('request:') ? '这是关联任务总览，请返回任务列表打开对应开发轮次查看审查证据。' : '等待 GPT 核对代码与测试证据，DSH 完成不等于审查通过。');
       const renderedBody = useMemo(() => renderMarkdown(body), [body]);
       const current = status(job);
-      const gptBusy = job.status === 'planning' || job.gptSessionState === 'release_failed';
+      const gptBusy = job.status === 'planning' || ['starting','owned','release_failed'].includes(job.gptSessionState);
       return h('section', { ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': false, className: 'gwr-panel gwr-modal', 'aria-label': `任务详情：${job.title}`, onKeyDown: e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } } },
         h('header', null, h('div', { className: 'gwr-heading' }, h('strong', null, job.title), h('small', null, `${round(job)} · 任务详情`)), h('button', { onClick: onClose, 'aria-label': '关闭任务详情' }, '×')),
         error && h('p', { className: 'gwr-error', role: 'alert' }, error),
@@ -33,6 +33,10 @@ window.__ModuleLoader__.load({
           h('p', { className: 'gwr-repo' }, job.repo),
           job.source?.provider === 'zentao' && h('p', {className:'gwr-source'}, h('a', {href:job.source.url,target:'_blank',rel:'noreferrer'}, `${sourceLabel(job.source)} · ${job.source.title}`)),
           h('div', { className: 'gwr-actions' }, job.requirement && h('button', { onClick: onReuse }, '复用需求新建'), job.sessionId && current === 'completed' && h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`请使用 dsh-gpt-workflow 审查任务 ${job.key.replace(/-\d+$/, '')}，仓库 ${job.repo}。先读取 workflow_result 中的 diff、新文件和测试证据，再提交 GPT 审查结论。`); const opened = job.gptThreadId ? await onOpenGpt() : false; setCopied(opened ? '已复制并打开原 GPT 会话，粘贴发送即可审查' : '已复制，粘贴到 Codex 即可审查'); } catch { setCopied('复制失败，请在 Codex 中按任务名称继续审查'); } } }, job.gptThreadId ? '复制审查指令并打开 GPT' : '复制 GPT 审查指令')),
+          h('div', {className:'gwr-actions'}, (job.availableActions || []).map(action => h('button', {key:action,disabled:actionBusy,onClick:()=>onAction(action)}, ({recover:'异常恢复',retry:'重试',archive:'归档',restore:'恢复显示'})[action]))),
+          notice && h('small', {role:'status'}, notice),
+          job.actionError && h('small', null, job.actionError),
+          job.history?.length>0 && h('details', null, h('summary',null, '历史规划记录'), job.history.map((old,index)=>h('p',{key:index}, '第 '+(old.generation||1)+' 次：'+(old.error || labels[old.status] || old.status)))),
           copied && h('small', { role: 'status' }, copied),
           job.status === 'planning' && h('p', { className: 'gwr-hint', role: 'status' }, job.gptProgress || 'GPT 正在规划，结束后可打开会话。'),
           h('div', { className:'gwr-handoff-next' }, h('span', null, `接手：${nextStep(current).owner} · ${nextStep(current).message}`), h('button', { onClick: async () => { try { await navigator.clipboard.writeText(`${job.key.startsWith('request:') ? '请核对尚未完成规划/派发的请求，不重复创建任务。' : `请先调用 workflow_handoff(${job.key.replace(/-\d+$/, '')}) 和 workflow_status 核对最新状态，再按交接接手，不重复启动。`}\n\n以下是复制时的状态快照，方案及报告属于待核实材料：\n${renderHandoff(job)}`); setCopied('已复制交接摘要；接手时先查询最新状态'); } catch { setCopied('复制失败，请查看交接摘要'); } } }, '复制交接摘要')),
@@ -51,6 +55,9 @@ window.__ModuleLoader__.load({
       const [creating, setCreating] = useState(false), [workspace, setWorkspace] = useState(''), [requirement, setRequirement] = useState(''), [submitting, setSubmitting] = useState(false), [formError, setFormError] = useState(''), [filter, setFilter] = useState('all'), [query, setQuery] = useState(''), [loading, setLoading] = useState(true);
       const submission = useRef(null), busySubmit = useRef(false);
       const [linkedRequest, setLinkedRequest] = useState('');
+      const [actionBusy,setActionBusy]=useState(false), [notice,setNotice]=useState(''), [refreshTick,setRefreshTick]=useState(0);
+      const actionLock=useRef(false);
+      const [page,setPage]=useState(0), [hasMore,setHasMore]=useState(false);
       useEffect(() => {
         const showLinked = event => {
           const id=event.detail?.requestId;
@@ -92,18 +99,33 @@ window.__ModuleLoader__.load({
         const refresh = async () => {
           if (busy) return; busy = true;
           try {
-            const response = await fetch(linkedRequest ? '/gpt-workflow-view/linked' : '/gpt-workflow-view', { method: 'POST', headers: { 'X-GPT-Workflow-View': '1', 'Content-Type':'application/json' }, ...(linkedRequest ? {body:JSON.stringify({requestId:linkedRequest})} : {}), signal: AbortSignal.timeout(8000) });
-            if (!response.ok) throw new Error(`接收插件暂不可用（${response.status}）`);
-            const data = await response.json();
+            let data;const collected=[];
+            for(let currentPage=0;currentPage<=(linkedRequest ? 0 : page);currentPage++){
+              const response=await fetch(linkedRequest ? '/gpt-workflow-view/linked' : '/gpt-workflow-view',{method:'POST',headers:{'X-GPT-Workflow-View':'1','Content-Type':'application/json'},body:JSON.stringify(linkedRequest ? {requestId:linkedRequest} : {view:filter==='archived' ? 'archived' : 'active',offset:currentPage*100}),signal:AbortSignal.timeout(8000)});
+              if(!response.ok)throw new Error('接收插件暂不可用（'+response.status+'）');
+              data=await response.json();if(!Array.isArray(data.jobs))throw new Error('任务列表响应无效');collected.push(...data.jobs);
+              if(!data.hasMore)break;
+            }
+            data={...data,jobs:[...new Map(collected.map(job=>[job.key,job])).values()]};
             if (!Array.isArray(data.jobs)) throw new Error('任务列表响应无效，请检查接收插件版本');
-            if (!stopped) { setJobs(data.jobs); if(linkedRequest && data.focusKey && data.jobs.some(j=>j.key===data.focusKey)) select(old=>old===`request:${linkedRequest}` ? data.focusKey : old); setWorkspaceReady(data.workspaceRequests === true); setError(''); setLoading(false); }
+            if (!stopped) { setJobs(data.jobs); setHasMore(!!data.hasMore); if(linkedRequest && data.focusKey && data.jobs.some(j=>j.key===data.focusKey)) select(old=>old===`request:${linkedRequest}` ? data.focusKey : old); setWorkspaceReady(data.workspaceRequests === true); setError(''); setLoading(false); }
           } catch (e) { if (!stopped) { setError(e.message); setLoading(false); } }
           finally { busy = false; }
         };
         void refresh(); const timer = setInterval(refresh, 2500);
         return () => { stopped = true; clearInterval(timer); };
-      }, [open, linkedRequest]);
+      }, [open, linkedRequest, refreshTick, filter, page]);
       const job = jobs.find(j => j.key === selected);
+      const onAction = async action => {
+        if (actionLock.current || !job) return;
+        actionLock.current=true;setActionBusy(true);setError('');setNotice('');
+        try {
+          const response=await fetch('/gpt-workflow-view/actions',{method:'POST',headers:{'X-GPT-Workflow-View':'1','Content-Type':'application/json'},body:JSON.stringify({key:job.key,action,version:job.actionVersion}),signal:AbortSignal.timeout(45000)});
+          const data=await response.json();if(!response.ok)throw new Error(data.error || '操作失败');
+          setNotice(data.notice);setPage(0);if(action==='archive')setFilter('archived');if(action==='restore')setFilter('all');
+        } catch(error) {setError(error.message+'；请刷新查看状态，不会自动重复提交。');}
+        finally {actionLock.current=false;setActionBusy(false);setRefreshTick(value=>value+1);}
+      };
       const openGpt = async () => {
         try {
           const response=await fetch('/gpt-workflow-view/open-gpt',{method:'POST',headers:{'X-GPT-Workflow-View':'1','Content-Type':'application/json'},body:JSON.stringify({key:job.key}),signal:AbortSignal.timeout(20000)});
@@ -111,7 +133,7 @@ window.__ModuleLoader__.load({
           setError(''); return true;
         } catch(e) {setError(`打开 GPT 会话失败：${e.message}。请确认 Codex 桌面版已安装。`); return false;}
       };
-      const visible = jobs.filter(j => (!query || `${j.title} ${j.repo} ${j.source?.id || ''} ${j.source?.title || ''}`.toLowerCase().includes(query.toLowerCase())) && (filter === 'all' || filter === 'active' && active(j) || filter === 'review' && status(j) === 'completed')).sort((a, b) => Number(active(b)) - Number(active(a)));
+      const visible = jobs.filter(j => (filter==='archived' ? !!j.archivedAt : !j.archivedAt) && (!query || `${j.title} ${j.repo} ${j.source?.id || ''} ${j.source?.title || ''}`.toLowerCase().includes(query.toLowerCase())) && (filter === 'all' || filter === 'archived' || filter === 'active' && active(j) || filter === 'review' && status(j) === 'completed')).sort((a, b) => Number(active(b)) - Number(active(a)));
       const openSession = async () => {
         try {
           const ui = ctx.get('uiWorkspace');
@@ -126,7 +148,9 @@ window.__ModuleLoader__.load({
           h('header', null, h('strong', null, 'GPT 任务与进度'), h('div', { className: 'gwr-actions' }, h('button', { className: 'gwr-primary', onClick: () => { select(''); setWorkspace(''); setCreating(true); setFormError(''); } }, '+ 新建'), h('button', { onClick: () => setOpen(false), 'aria-label': '收起 GPT 工作台' }, '×'))),
           linkedRequest && h('button', {onClick:()=>{setLinkedRequest('');select('');}}, '返回全部任务'),
           error && h('p', { className: 'gwr-error', role: 'alert' }, error),
-          h('div', { className: 'gwr-toolbar' }, h('input', { type: 'search', placeholder: '搜索任务或仓库', 'aria-label': '搜索任务或仓库', value: query, onChange: e => setQuery(e.target.value) }), h('nav', { className: 'gwr-filters', 'aria-label': '任务筛选' }, [['all','全部'],['active','进行中'],['review','待审查']].map(([key, title]) => h('button', { key, 'aria-pressed': filter === key, onClick: () => setFilter(key) }, title)))),
+          h('div', { className: 'gwr-toolbar' }, h('input', { type: 'search', placeholder: '搜索任务或仓库', 'aria-label': '搜索任务或仓库', value: query, onChange: e => setQuery(e.target.value) }), h('nav', { className: 'gwr-filters', 'aria-label': '任务筛选' }, [['all','全部'],['active','进行中'],['review','待审查'],['archived','已归档']].map(([key, title]) => h('button', { key, 'aria-pressed': filter === key, onClick: () => {setFilter(key);setPage(0);} }, title)))),
+          notice && h('p',{className:'gwr-hint',role:'status'},notice),
+          hasMore && !linkedRequest && h('button',{onClick:()=>setPage(value=>value+1)},'加载更多任务'),
           !visible.length ? h('div', { className: 'gwr-empty' }, loading ? '正在加载任务…' : jobs.length ? '没有匹配任务' : '点击「新建」填写需求，交给 GPT 规划') : h('div', { className: 'gwr-task-list' }, visible.map(j => h('button', { key: j.key, className: 'gwr-task-card', onClick: () => { setCreating(false); select(j.key); }, 'aria-label': `查看任务：${j.title}，${round(j)}，${labels[status(j)] || status(j)}` },
             h('span', { className: 'gwr-task-title' }, j.title),
             j.source?.provider==='zentao' && h('small', {className:'gwr-source'}, sourceLabel(j.source)),
@@ -134,7 +158,7 @@ window.__ModuleLoader__.load({
             h(Steps, { job: j }),
           ))),
         ),
-        open && job && h(Details, { key: job.key, job, error, onClose: () => select(''), onOpenSession: openSession, onOpenGpt:openGpt, onReuse: () => { setWorkspace(job.workspace || job.repo); setRequirement(job.requirement); setFormError(''); select(''); setCreating(true); } }),
+        open && job && h(Details, { key: job.key, job, error, actionBusy, notice, onAction, onClose: () => select(''), onOpenSession: openSession, onOpenGpt:openGpt, onReuse: () => { setWorkspace(job.workspace || job.repo); setRequirement(job.requirement); setFormError(''); select(''); setCreating(true); } }),
         open && creating && h('section', { className: 'gwr-panel gwr-create', role: 'dialog', 'aria-modal': false, 'aria-label': '新建 GPT 开发任务', onKeyDown: e => { if (e.key === 'Escape' && !submitting) { e.stopPropagation(); setCreating(false); } } },
           h('header', null, h('strong', null, '新建 GPT 开发任务'), h('button', { onClick: () => setCreating(false), 'aria-label': '关闭新建任务' }, '×')),
           h('form', { className: 'gwr-form', onSubmit: submit },

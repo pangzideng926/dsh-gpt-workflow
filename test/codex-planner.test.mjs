@@ -34,10 +34,12 @@ class Client extends EventEmitter {
 }
 test('规划使用可见持久会话，在推理前保存 ID，并保留只读权限', async () => {
   const client = new Client(), updates = [], home = fs.mkdtempSync(path.join(os.tmpdir(),'gpt-planner-'));
-  const plan = createPlanner(home, undefined, {connect:async(_bin,options)=>{client.options=options;return client;}});
+  const plan = createPlanner(home, undefined, {connect:async(_bin,options)=>{client.options=options;options.onSpawn(1234);return client;}});
   const result = await plan({id:'request',repo:home,requirement:'示例'}, update=>updates.push(update));
   assert.equal(result.title,'示例');
-  assert.equal(updates[0].gptThreadId,'test-thread');
+  assert.equal(updates[0].gptSessionState,'starting');
+  assert.equal(updates[1].gptPid,1234);
+  assert.equal(updates[2].gptThreadId,'test-thread');
   const start = client.calls.find(c=>c.method==='thread/start').params;
   assert.equal(start.ephemeral,false); assert.equal(start.sandbox,'read-only');
   assert.equal(start.threadSource,'user');
@@ -129,4 +131,15 @@ test('释放失败不能当作可交接成功，并留下占用状态',async()=>
   client.close=async()=>{throw new Error('规划进程未退出');};
   await assert.rejects(createPlanner(home,undefined,{connect:async(_bin,options)=>{client.options=options;return client;}})({id:'request',repo:home,requirement:'示例'},update=>updates.push(update)),/进程未退出/);
   assert.equal(updates.at(-1).gptSessionState,'release_failed');
+});
+
+test('重试规划保留首轮文件，并续接原会话',async()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'gpt-retry-planner-'));
+  fs.mkdirSync(path.join(home,'request'));fs.writeFileSync(path.join(home,'request','legacy-answer.md'),'原失败证据');
+  const client=new Client();
+  await createPlanner(home,undefined,{connect:async(_bin,options)=>{client.options=options;return client;}})({id:'request',repo:home,requirement:'示例',generation:2,gptThreadId:'test-thread'},()=>{});
+  assert.equal(fs.readFileSync(path.join(home,'request','legacy-answer.md'),'utf8'),'原失败证据');
+  assert.match(fs.readFileSync(path.join(home,'request','attempts','2','legacy-answer.md'),'utf8'),/^# 示例/);
+  assert.ok(client.calls.some(c=>c.method==='thread/resume'));
+  assert.ok(!client.calls.some(c=>c.method==='thread/start'));
 });

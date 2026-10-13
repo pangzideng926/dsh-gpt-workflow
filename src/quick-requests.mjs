@@ -44,35 +44,42 @@ export class QuickRequests {
       catch { return { ...item, status: 'interrupted', error: '无法读取已派发任务，请核对任务记录' }; }
     });
   }
-  async accept(input) {
+  async retryPlanning(id) {
+    const previous=this.get(id);
+    if (this.active.has(id) || previous.status!=='failed' || requestTaskIds(previous).length || previous.archivedAt) throw new Error('当前请求不能重新规划');
+    const {history,...record}=previous;
+    const retry={...previous,generation:(previous.generation||1)+1,history:[...(history||[]),record],error:undefined,plan:undefined,gptProgress:undefined,recoveredAt:undefined};
+    return this.accept({id,workspace:previous.workspace,repo:previous.repo,requirement:previous.requirement,source:previous.source},retry);
+  }
+  async accept(input, retry) {
     if (input.source !== undefined) {
       const source=normalizeZentaoSource(input.source), id=zentaoRequestId(source);
-      if (fs.existsSync(this.file(id))) {
+      if (!retry && fs.existsSync(this.file(id))) {
         const old=this.get(id);
         if (!old.source || zentaoRequestId(old.source)!==id) throw new Error('禅道关联记录冲突，请核对原请求');
         return old;
       }
-      return this.acceptWorkspace({...input,id,source});
+      return this.acceptWorkspace({...input,id,source},retry);
     }
-    if (input.workspace !== undefined) return this.acceptWorkspace(input);
+    if (input.workspace !== undefined) return this.acceptWorkspace(input,retry);
     this.file(input.id);
     if (typeof input.repo !== 'string' || !path.isAbsolute(input.repo)) throw new Error('请选择具体 Git 仓库的绝对路径');
     if (typeof input.requirement !== 'string' || !input.requirement.trim() || input.requirement.length > 20000) throw new Error('需求不能为空且不能超过 20000 字符');
     const repo = fs.realpathSync.native(input.repo);
     const requirement = input.requirement.trim();
     const digest = createHash('sha256').update(JSON.stringify({ repo, requirement })).digest('hex');
-    if (fs.existsSync(this.file(input.id))) {
+    if (!retry && fs.existsSync(this.file(input.id))) {
       const old = this.get(input.id);
       if (old.digest !== digest) throw new Error('同一请求 ID 内容不一致');
       return old;
     }
     const root = resolveTarget(repo, repo);
     if (path.relative(repo, root)) throw new Error('请选择具体 Git 仓库根目录');
-    if (this.list().some(j => j.repo === repo && ['planning', 'dispatching', 'interrupted'].includes(j.status))) throw new Error('该仓库已有规划或待核查请求，请先处理原任务');
+    if (this.list().some(j => j.id!==retry?.id && !j.archivedAt && j.repo === repo && ['planning', 'dispatching', 'interrupted'].includes(j.status))) throw new Error('该仓库已有规划或待核查请求，请先处理原任务');
     if (fs.existsSync(this.workflow.lockPath(repo))) throw new Error('该仓库已有开发/审查任务，请先完成原任务');
     const baseline = snapshot(repo);
     if (baseline.status) throw new Error('仓库有未提交改动，请先完成原任务或选择干净工作树');
-    const item = { id: input.id, key: `request:${input.id}`, title: requirement.split('\n')[0].slice(0, 80), repo, requirement, digest, status: 'planning', createdAt: new Date().toISOString() };
+    const item = { ...retry, id: input.id, key: `request:${input.id}`, title: requirement.split('\n')[0].slice(0, 80), repo, requirement, digest, status: 'planning', createdAt: retry?.createdAt || new Date().toISOString() };
     this.save(item);
     const work = Promise.resolve().then(async () => {
       try {
@@ -91,7 +98,7 @@ export class QuickRequests {
     return item;
   }
 
-  async acceptWorkspace(input) {
+  async acceptWorkspace(input, retry) {
     this.file(input.id);
     if (typeof input.workspace !== 'string' || !path.isAbsolute(input.workspace)) throw new Error('请提供工作区绝对路径');
     if (typeof input.requirement !== 'string' || !input.requirement.trim() || input.requirement.length > 20000) throw new Error('需求不能为空且不能超过 20000 字符');
@@ -99,19 +106,19 @@ export class QuickRequests {
     if (!fs.statSync(workspace).isDirectory()) throw new Error('工作区必须是目录');
     const requirement = input.requirement.trim();
     const digest = createHash('sha256').update(JSON.stringify({ workspace, requirement, source:input.source })).digest('hex');
-    if (fs.existsSync(this.file(input.id))) {
+    if (!retry && fs.existsSync(this.file(input.id))) {
       const old = this.get(input.id);
       if (old.digest !== digest) throw new Error('同一请求 ID 内容不一致');
       return old;
     }
-    if (this.list().some(j => j.workspace === workspace && ['planning','dispatching','interrupted'].includes(j.status))) throw new Error('该工作区已有规划或待核查请求，请先处理原任务');
-    const item = { source:input.source, id:input.id, key:`request:${input.id}`, title:requirement.split('\n')[0].slice(0,80), workspace, repo:workspace, requirement, digest, status:'planning', stage:'locate', createdAt:new Date().toISOString() };
+    if (this.list().some(j => j.id!==retry?.id && !j.archivedAt && j.workspace === workspace && ['planning','dispatching','interrupted'].includes(j.status))) throw new Error('该工作区已有规划或待核查请求，请先处理原任务');
+    const item = { ...retry, source:input.source, id:input.id, key:`request:${input.id}`, title:requirement.split('\n')[0].slice(0,80), workspace, repo:workspace, requirement, digest, status:'planning', stage:'locate', createdAt:retry?.createdAt || new Date().toISOString() };
     this.save(item);
     const update = info => { Object.assign(item, info); this.save(item); };
     const work = Promise.resolve().then(async()=>{
       try {
         const checkAvailable = repo => {
-          if (this.list().some(j=>j.id!==item.id && ['planning','dispatching','interrupted'].includes(j.status) && (j.repo===repo || j.repos?.includes(repo)))) throw new Error(`该仓库已有规划或待核查请求：${repo}`);
+          if (this.list().some(j=>j.id!==item.id && !j.archivedAt && ['planning','dispatching','interrupted'].includes(j.status) && (j.repo===repo || j.repos?.includes(repo)))) throw new Error(`该仓库已有规划或待核查请求：${repo}`);
           if (fs.existsSync(this.workflow.lockPath(repo))) throw new Error(`该仓库已有开发/审查任务：${repo}`);
         };
         let scopeError;

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 
 // 独立 stdio 客户端只管理自己启动的进程，不接管桌面进程或修改会话数据库。
 export class CodexRpc extends EventEmitter {
-  constructor(bin, {signal, stderr = 'ignore', cwd, timeoutMs = 600000, closeTimeoutMs = 5000, onToolCall, spawnProcess = spawn} = {}) {
+  constructor(bin, {signal, stderr = 'ignore', cwd, timeoutMs = 600000, closeTimeoutMs = 5000, onToolCall, onSpawn, spawnProcess = spawn} = {}) {
     super(); this.pending = new Map(); this.seq = 0; this.closeTimeoutMs=closeTimeoutMs;
     this.child = spawnProcess(bin, ['app-server', '--listen', 'stdio://'], {cwd, windowsHide:true, shell:false, stdio:['pipe','pipe',stderr]});
     this.lines = createInterface({input:this.child.stdout});
@@ -36,6 +36,7 @@ export class CodexRpc extends EventEmitter {
     this.abort = () => this.fail(new Error('GPT 规划被取消'));
     this.signal = signal; signal?.addEventListener('abort', this.abort, {once:true});
     this.deadline = setTimeout(() => this.fail(new Error('GPT 规划超过 10 分钟，已停止')), timeoutMs);
+    try {onSpawn?.(this.child.pid);} catch(error) {this.fail(error);}
     if (signal?.aborted) this.abort();
   }
   fail(error) {

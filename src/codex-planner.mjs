@@ -35,7 +35,7 @@ export function resolveCodex() {
 
 export function createPlanner(home, signal, {connect = connectCodex} = {}) {
   return async (request, update, inspectResult) => {
-    const dir = path.join(home, request.id); fs.mkdirSync(dir, { recursive: true });
+    const dir = request.generation>1 ? path.join(home,request.id,'attempts',String(request.generation)) : path.join(home,request.id); fs.mkdirSync(dir, { recursive: true });
     const stage = request.workspace ? request.stage : 'legacy', locating = stage === 'locate';
     const output = path.join(dir, `${stage}-result.json`);
     fs.writeFileSync(path.join(dir, `${stage}-schema.json`), JSON.stringify(planningTool.inputSchema));
@@ -51,7 +51,8 @@ export function createPlanner(home, signal, {connect = connectCodex} = {}) {
     const turnStarted = new Promise(resolve=>{started=resolve;});
     try {
       const cwd=request.workspace || request.repo;
-      client = await connect(resolveCodex(), {cwd, signal, stderr:err, onToolCall:async params=>{
+      update({gptSessionState:'starting',gptPid:undefined});
+      client = await connect(resolveCodex(), {cwd, signal, stderr:err, onSpawn:pid=>update({gptPid:pid}), onToolCall:async params=>{
         await turnStarted;
         if (!turnId || params.threadId !== threadId || params.turnId !== turnId || params.tool !== planningTool.name || params.namespace) throw new Error('拒绝非当前规划回合的工具请求');
         let parsed;

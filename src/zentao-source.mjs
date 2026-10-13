@@ -32,8 +32,8 @@ export function zentaoProgress(request, workflow, jobs) {
       return {id,key:task.status==='planned' || !job ? request.key : key,status,repo:task.repo,error:task.error || job?.error};
     } catch { return {id,key:request.key,status:'interrupted',error:'关联任务缺失，请核对原记录'}; }
   });
-  let status=request.status;
-  if (tasks.length && !['failed','interrupted'].includes(status)) {
+  let status=request.archivedAt ? 'archived' : request.status;
+  if (!request.archivedAt && tasks.length && !['failed','interrupted'].includes(status)) {
     const states=tasks.map(t=>t.status);
     status=states.every(s=>s==='approved') ? 'approved' : ['failed','interrupted','needs_changes','dispatching','accepted','running','completed'].find(s=>states.includes(s)) || 'interrupted';
   }
